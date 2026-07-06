@@ -75,29 +75,76 @@ if ! command -v git >/dev/null 2>&1; then
     exit 1
 fi
 
-# Prefer python3.11/3.12/3.10 if present, else fall back to python3.
+# Pick a Python interpreter in the supported range [3.10, 3.12].
+#
+# Why capped at 3.12: several of our transitive pins (scipy 1.14.0,
+# numpy 1.26.4, tokenizers 0.19.1, safetensors 0.4.3, pyyaml 6.0.1)
+# do not publish cp313 macOS-arm64 wheels on PyPI. A fresh Mac in 2026
+# ships Python 3.13 as /usr/bin/python3, so pip would try to build
+# those from source and blow up on scipy's Meson build. Un-pinning
+# them cascades into numpy 2.x, which breaks the torch 2.5.x we
+# install for MPS. Cap at 3.12 until the pins move to numpy 2.x.
+
+# Helper: is $1 an interpreter in the [3.10, 3.12] range?
+py_in_range() {
+    "$1" - <<'PY' >/dev/null 2>&1
+import sys
+sys.exit(0 if (3, 10) <= sys.version_info[:2] <= (3, 12) else 1)
+PY
+}
+
 PYTHON_BIN=""
-for cand in python3.12 python3.11 python3.10 python3; do
+for cand in python3.12 python3.11 python3.10; do
     if command -v "$cand" >/dev/null 2>&1; then
         PYTHON_BIN="$(command -v "$cand")"
         break
     fi
 done
 
-if [[ -z "$PYTHON_BIN" ]]; then
-    err "No suitable Python found. Install Python 3.10+ via python.org or Homebrew:"
-    err "    brew install python@3.11"
-    exit 1
+# Fall back to /usr/bin/python3 (or similar) only if it happens to be
+# in range. This is the common Homebrew / Xcode-CLT case on 3.11-era Macs.
+if [[ -z "$PYTHON_BIN" ]] && command -v python3 >/dev/null 2>&1; then
+    _generic="$(command -v python3)"
+    if py_in_range "$_generic"; then
+        PYTHON_BIN="$_generic"
+    fi
 fi
 
-# Enforce >= 3.10 (Fooocus uses match / PEP-604 unions elsewhere).
-PY_VER_OK=$("$PYTHON_BIN" - <<'PY'
-import sys
-print("1" if sys.version_info >= (3, 10) else "0")
-PY
-)
-if [[ "$PY_VER_OK" != "1" ]]; then
-    err "Found $PYTHON_BIN but it is older than 3.10. Install a newer Python."
+if [[ -z "$PYTHON_BIN" ]]; then
+    err "No supported Python found (need 3.10, 3.11, or 3.12)."
+    err ""
+    err "Reason: several pinned scientific packages don't publish Python"
+    err "3.13 wheels for macOS arm64 yet, so pip would try to build"
+    err "scipy / numpy from source and fail."
+    err ""
+    if command -v brew >/dev/null 2>&1; then
+        printf '%s[FoocusRX]%s Install Python 3.12 via Homebrew now? [Y/n] ' "$YLW" "$RST"
+        read -r reply || reply="n"
+        if [[ "$reply" =~ ^([Yy]|)$ ]]; then
+            info "Running: brew install python@3.12"
+            brew install python@3.12
+            PYTHON_BIN="$(command -v python3.12 || true)"
+            if [[ -z "$PYTHON_BIN" ]]; then
+                err "brew install completed but python3.12 is still not on PATH."
+                err "Try:  brew link --overwrite python@3.12"
+                exit 1
+            fi
+        else
+            err "Aborted. Install manually with:  brew install python@3.12"
+            exit 1
+        fi
+    else
+        err "Install one of:"
+        err "    * Homebrew (https://brew.sh) then:  brew install python@3.12"
+        err "    * The python.org installer for Python 3.12"
+        exit 1
+    fi
+fi
+
+# Final sanity check against the selected interpreter — guards against
+# an in-PATH but weird python3.12 (e.g. asdf shim that resolves to 3.13).
+if ! py_in_range "$PYTHON_BIN"; then
+    err "$PYTHON_BIN reports $("$PYTHON_BIN" -V 2>&1) which is outside 3.10-3.12."
     exit 1
 fi
 ok "Using $PYTHON_BIN ($("$PYTHON_BIN" -V 2>&1))."
