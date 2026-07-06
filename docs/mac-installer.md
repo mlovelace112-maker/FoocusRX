@@ -25,8 +25,26 @@ duplicating downloads.
 ### What the installer needs
 
 - macOS with Xcode Command Line Tools (`xcode-select --install`)
-- Python 3.10 or newer (system Python 3, python.org, or Homebrew all work)
+- **Python 3.10, 3.11, or 3.12** (see version note below)
 - ~15 GB free disk for the venv and default models
+
+### Python version note (why 3.12 max)
+
+Several of our pinned scientific packages (`scipy 1.14.0`, `numpy 1.26.4`,
+`tokenizers 0.19.1`, `safetensors 0.4.3`, `pyyaml 6.0.1`) don't publish
+Python 3.13 wheels for macOS arm64 yet. On 3.13, pip would try to build
+scipy / numpy from source and fail on Meson.
+
+Un-pinning those packages isn't a fix because they cascade into numpy 2.x,
+and torch 2.5.x for MPS (which we install) is ABI-incompatible with numpy 2.
+
+Until that ecosystem-wide bump happens, the installer detects
+`python3.12` / `python3.11` / `python3.10` (in that priority order) and
+refuses to run on 3.13+. If nothing matches and Homebrew is available,
+the installer offers to run `brew install python@3.12` for you.
+
+Manual override: install any 3.12 interpreter and re-run the installer
+— it will pick up the versioned binary on `PATH`.
 
 ### First-launch behavior on Apple Silicon
 
