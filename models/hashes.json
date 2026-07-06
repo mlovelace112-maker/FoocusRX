@@ -1,0 +1,74 @@
+{
+  "https://huggingface.co/lllyasviel/fooocus_inpaint/resolve/main/fooocus_inpaint_head.pth": {
+    "sha256": "32f7f838e0c6d8f13437ba8411e77a4688d77a2e34df8857e4ef4d51f6b97692",
+    "size": 52602
+  },
+  "https://huggingface.co/lllyasviel/fooocus_inpaint/resolve/main/inpaint.fooocus.patch": {
+    "sha256": "ba2a82dec0151105cb593ba7254f58548ec6810aeb9e081c4533fb227d654476",
+    "size": 1317090025
+  },
+  "https://huggingface.co/lllyasviel/fooocus_inpaint/resolve/main/inpaint_v25.fooocus.patch": {
+    "sha256": "640e480158e8a8e0aa673c77d19f8b4095a562ac72e2f2a146b445f78ed0febc",
+    "size": 2580722369
+  },
+  "https://huggingface.co/lllyasviel/fooocus_inpaint/resolve/main/inpaint_v26.fooocus.patch": {
+    "sha256": "f8657a025104e22d70f9c060635d8e8c2196f433871a2f68dc40abd2171f0d59",
+    "size": 1323362033
+  },
+  "https://huggingface.co/lllyasviel/misc/resolve/main/clip_vision_vit_h.safetensors": {
+    "sha256": "9a11c14945fb98c7ac9a54fab5e498885731a0780260dad7adf41f6f59655ee5",
+    "size": 1972298538
+  },
+  "https://huggingface.co/lllyasviel/misc/resolve/main/control-lora-canny-rank128.safetensors": {
+    "sha256": "56389dbb245ca44de91d662529bd4298abc55ce2318f60bc19454fb72ff68247",
+    "size": 395733680
+  },
+  "https://huggingface.co/lllyasviel/misc/resolve/main/fooocus_ip_negative.safetensors": {
+    "sha256": "d7caedfb46780825895718c7c8e9ee077e675c935ddfcf272f1c01a4fc8ea72d",
+    "size": 65616
+  },
+  "https://huggingface.co/lllyasviel/misc/resolve/main/fooocus_upscaler_s409985e5.bin": {
+    "sha256": "b2a66d21d2e44d2b59c53414419279763a423a61f05bc43d7c24e0489aeca5a3",
+    "size": 33636613
+  },
+  "https://huggingface.co/lllyasviel/misc/resolve/main/fooocus_xl_cpds_128.safetensors": {
+    "sha256": "eec3fd8209a65b41341ea9f415de66909c97b30fb4d20965b3304e8e5251c2f1",
+    "size": 395706528
+  },
+  "https://huggingface.co/lllyasviel/misc/resolve/main/ip-adapter-plus-face_sdxl_vit-h.bin": {
+    "sha256": "50e886d82940b3c5873d80c2b06d8a4b0d0fccec70bc44fd53f16ac3cfd7fc36",
+    "size": 1013454761
+  },
+  "https://huggingface.co/lllyasviel/misc/resolve/main/ip-adapter-plus_sdxl_vit-h.bin": {
+    "sha256": "ec70edb7cc8e769c9388d94eeaea3e4526352c9fae793a608782d1d8951fde90",
+    "size": 1013454427
+  },
+  "https://huggingface.co/lllyasviel/misc/resolve/main/sdxl_lcm_lora.safetensors": {
+    "sha256": "c3dbf7eb26dd00ae6b6b95da69be9f1cb95a3b2c5bcf9be82323227a19b91329",
+    "size": 393854624
+  },
+  "https://huggingface.co/mashb1t/misc/resolve/main/sam_vit_b_01ec64.pth": {
+    "sha256": "ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912",
+    "size": 375042383
+  },
+  "https://huggingface.co/mashb1t/misc/resolve/main/sam_vit_h_4b8939.pth": {
+    "sha256": "a7bf3b02f3ebf1267aba913ff637d9a2d5c33d3173bb679e46d9f338c26f262e",
+    "size": 2564550879
+  },
+  "https://huggingface.co/mashb1t/misc/resolve/main/sam_vit_l_0b3195.pth": {
+    "sha256": "3adcc4315b642a4d2101128f611684e8734c41232a17c648ed1693702a49a622",
+    "size": 1249524607
+  },
+  "https://huggingface.co/mashb1t/misc/resolve/main/sdxl_hyper_sd_4step_lora.safetensors": {
+    "sha256": "12f81a27d00a751a40d68fd15597091896c5a90f3bd632fb6c475607cbdad76e",
+    "size": 787359648
+  },
+  "https://huggingface.co/mashb1t/misc/resolve/main/sdxl_lightning_4step_lora.safetensors": {
+    "sha256": "bf56cf2657efb15e465d81402ed481d1e11c4677e4bcce1bc11fe71ad8506b79",
+    "size": 393854592
+  },
+  "https://huggingface.co/mashb1t/misc/resolve/main/stable-diffusion-safety-checker.bin": {
+    "sha256": "64b8393f1afd5a0c1ed2aa5f341fa7c08286839a48f3743162a76a2835c808bd",
+    "size": 1216067303
+  }
+}
