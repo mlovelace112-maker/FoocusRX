@@ -1,5 +1,4 @@
 import os
-import ssl
 import sys
 
 print('[System ARGV] ' + str(sys.argv))
@@ -13,7 +12,12 @@ os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 if "GRADIO_SERVER_PORT" not in os.environ:
     os.environ["GRADIO_SERVER_PORT"] = "7865"
 
-ssl._create_default_https_context = ssl._create_unverified_context
+# NOTE: Upstream Fooocus disables TLS certificate verification globally here
+# via ssl._create_default_https_context = ssl._create_unverified_context. That
+# turns every outbound HTTPS request in the process (PyTorch model downloads,
+# HuggingFace Hub, rembg, etc.) into a MITM opportunity. FoocusRX removes it.
+# If a user hits an SSL error behind a corporate CA, set SSL_CERT_FILE or
+# REQUESTS_CA_BUNDLE to the CA bundle path instead.
 
 import platform
 import fooocus_version
