@@ -98,6 +98,25 @@ def prepare_environment():
     if REINSTALL_ALL or not requirements_met(requirements_file):
         run_pip(f"install -r \"{requirements_file}\"", "requirements")
 
+    # Auto-install mtlflashattn on Apple Silicon (M4+). No-ops on
+    # non-Mac, on chips older than M4, if the shim is already
+    # installed, if the user set FOOOCUS_AUTO_INSTALL_MTLFLASHATTN=0,
+    # or if a marker file from a previous attempt is present. Never
+    # raises — install failures print a message and continue.
+    try:
+        from modules.apple_silicon import auto_install_mtlflashattn as _auto_install_mfa
+        status = _auto_install_mfa()
+        if status not in ("not-apple-silicon", "gen-too-low", "already-installed"):
+            print(f"[apple_silicon] mtlflashattn auto-install: {status}")
+        # If we just installed it, run the activation path so the shim
+        # is live in the current process instead of waiting for the
+        # next launch to pick it up.
+        if status == "installed":
+            from modules.apple_silicon import _try_activate_mtlflashattn as _activate
+            print(f"[apple_silicon] mtlflashattn activation: {_activate()}")
+    except Exception as exc:
+        print(f"[apple_silicon] mtlflashattn auto-install skipped: {exc!r}")
+
     return
 
 

@@ -112,6 +112,142 @@ def _try_activate_mtlflashattn() -> str:
         return f"activated-implicit ({exc.__class__.__name__})"
 
 
+def _marker_dir() -> str:
+    """Location for install-attempt markers. Chosen to live next to the
+    package so it survives across launches and is trivially inspectable.
+    Falls back to the repo root if we're running from a source tree.
+    """
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(module_dir)
+    return repo_root
+
+
+_MTLFLASHATTN_MARKER = ".mtlflashattn_install_attempted"
+
+
+def auto_install_mtlflashattn(*, log=print) -> str:
+    """Attempt a one-shot install of mtlflashattn on the first launch.
+
+    Contract
+    --------
+    Returns a status string. Never raises. Idempotent — subsequent calls
+    check a marker file and short-circuit instead of re-invoking pip.
+
+    Guards (short-circuit paths, all return without calling pip):
+
+      * ``'not-apple-silicon'`` - not running on Darwin/arm64.
+      * ``'gen-too-low'``       - detected chip is < M4. On M1-M3 the shim
+                                  offers only a marginal speedup and
+                                  the correctness fix past 4k tokens
+                                  isn't hit by SDXL's typical shapes
+                                  there; skip silently. M4+ still
+                                  benefits from the fp32-accumulate
+                                  correctness fix even without the
+                                  M5 Neural Accelerator speedup.
+      * ``'already-installed'`` - ``mtlflashattn`` is importable.
+      * ``'opt-out'``           - user set
+                                  ``FOOOCUS_AUTO_INSTALL_MTLFLASHATTN=0``.
+      * ``'previously-tried'``  - marker file exists; we've already made
+                                  one install attempt this venv. User can
+                                  ``rm .mtlflashattn_install_attempted`` to
+                                  retry.
+      * ``'no-torch'``          - torch is not importable yet
+                                  (mtlflashattn's build depends on
+                                  torch.mps.compile_shader; retry once
+                                  torch is installed).
+      * ``'torch-too-old'``     - torch < 2.5 (missing compile_shader).
+
+    Install path (calls pip):
+
+      * ``'installed'``   - pip returned 0 and the package now imports.
+      * ``'install-import-failed:<msg>'`` - pip returned 0 but import
+                                            still fails; unusual.
+      * ``'install-failed:<code>``` - pip returned non-zero; message goes
+                                      to the log.
+    """
+    if os.environ.get("FOOOCUS_AUTO_INSTALL_MTLFLASHATTN", "").strip() == "0":
+        return "opt-out"
+
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        return "not-apple-silicon"
+
+    # Cheap import check first — avoids ever writing the marker if
+    # someone already pip-installed mtlflashattn out-of-band.
+    try:
+        import mtlflashattn  # noqa: F401
+        return "already-installed"
+    except Exception:
+        pass
+
+    gen = detect_chip_generation(detect_chip_brand())
+    if gen and gen < 4:
+        return "gen-too-low"
+
+    marker = os.path.join(_marker_dir(), _MTLFLASHATTN_MARKER)
+    if os.path.exists(marker):
+        return "previously-tried"
+
+    # Torch must be present with mps.compile_shader before we can install
+    # mtlflashattn — its build imports torch and compiles a Metal shader.
+    try:
+        import torch  # noqa: F401
+    except Exception:
+        return "no-torch"
+
+    try:
+        torch_version = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2])
+    except Exception:
+        torch_version = (0, 0)
+    if torch_version < (2, 5):
+        return f"torch-too-old:{'.'.join(map(str, torch_version))}"
+
+    # Write the marker BEFORE invoking pip so a hard crash mid-install
+    # doesn't put us in an infinite retry loop next launch. If pip
+    # succeeds, the marker just signifies 'we've made an attempt'.
+    try:
+        with open(marker, "w") as fh:
+            fh.write("attempted\n")
+    except OSError:
+        # Read-only filesystem or permissions issue — don't loop, but
+        # don't try to install either.
+        return "marker-write-failed"
+
+    log("[apple_silicon] auto-installing mtlflashattn (one-time)...")
+    import subprocess as _sp
+    import sys as _sys
+    try:
+        completed = _sp.run(
+            [_sys.executable, "-m", "pip", "install", "--quiet", "mtlflashattn"],
+            check=False,
+        )
+    except Exception as exc:
+        log(f"[apple_silicon] mtlflashattn install raised: {exc!r}")
+        return f"install-failed:exception:{exc.__class__.__name__}"
+
+    if completed.returncode != 0:
+        log(
+            "[apple_silicon] mtlflashattn install failed (pip exit "
+            f"{completed.returncode}). Continuing without it. To retry "
+            "later: `rm .mtlflashattn_install_attempted` and relaunch."
+        )
+        return f"install-failed:{completed.returncode}"
+
+    # Confirm the package is importable in the same process. If pip
+    # succeeded but the shim is still not importable (e.g. a namespace
+    # collision), report that explicitly so the log is actionable.
+    try:
+        # Reload sys.path caches so a freshly-installed package is found.
+        import importlib
+        import site
+        importlib.reload(site)
+        import mtlflashattn  # noqa: F401
+    except Exception as exc:
+        return f"install-import-failed:{exc.__class__.__name__}"
+
+    log("[apple_silicon] mtlflashattn installed.")
+    return "installed"
+
+
 def configure(verbose: bool = True) -> dict:
     """Detect the chip and set MPS-tuning env vars. Idempotent.
 
@@ -191,10 +327,12 @@ def configure(verbose: bool = True) -> dict:
         applied["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
         applied["MKL_NUM_THREADS"] = os.environ["MKL_NUM_THREADS"]
 
-    # Try to activate mtlflashattn on M5+ (has per-GPU-core Neural
-    # Accelerators that the v2r kernel targets). Safe on any Mac -
-    # returns 'not-installed' if the package isn't present.
-    if gen >= 5:
+    # Activate mtlflashattn on M4+. M5+ hits the fastest tier via the
+    # Neural Accelerators; M4 still gets the correctness fix (fp32
+    # softmax/output accumulation vs. stock MPS SDPA's fp16 which is
+    # silently wrong past ~4k tokens). Safe on any Mac — returns
+    # 'not-installed' if the package isn't present.
+    if gen >= 4:
         status = _try_activate_mtlflashattn()
         info["mtlflashattn"] = status
         applied["mtlflashattn"] = status
@@ -214,10 +352,16 @@ def _log(info: dict) -> None:
     print(f"[apple_silicon] detected: {brand} ({gen_desc}, {mem} GB unified memory{core_desc})")
     for k, v in info["applied"].items():
         print(f"[apple_silicon]   {k}={v}")
-    if gen >= 5 and info.get("mtlflashattn") == "not-installed":
+    if gen >= 4 and info.get("mtlflashattn") == "not-installed":
+        # After PR #16 the launcher auto-installs mtlflashattn on M4+,
+        # so hitting this branch means either the auto-install was
+        # opted out, previously failed, or torch was too old at that
+        # time. Point the user at the marker file so a retry is
+        # obvious.
         print(
-            "[apple_silicon] M5+ detected: for a 3-11x attention speedup, "
-            "install mtlflashattn (`pip install mtlflashattn`)."
+            "[apple_silicon] mtlflashattn not active. Delete "
+            ".mtlflashattn_install_attempted and relaunch to retry "
+            "the auto-install, or `pip install mtlflashattn` manually."
         )
     if gen >= 5 and not os.environ.get("FOOOCUS_TORCH_COMPILE"):
         print(
