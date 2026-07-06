@@ -10,16 +10,16 @@ tqdm==4.66.4
 psutil==6.0.0
 pytorch_lightning==2.3.3
 omegaconf==2.3.0
-gradio==3.41.2
-# The following four packages MUST move together. Newer starlette/jinja2
-# break Gradio 3.41.2 with 'TypeError: unhashable type: dict' inside
-# jinja2's template cache (upstream Fooocus issue #4180). Do not bump any
-# one of these without bumping gradio to a 4.x line that supports the newer
-# starlette API.
-jinja2==3.0.3
-fastapi==0.95.2
-starlette==0.27.0
-pydantic==1.10.15
+gradio==4.44.1
+# Gradio 4.x supports pydantic 2 and modern starlette. The old Gradio 3.41.2
+# pin required jinja2==3.0.3 / fastapi==0.95.2 / starlette==0.27.0 /
+# pydantic==1.10.15 to work around upstream Fooocus issue #4180 (unhashable
+# dict inside jinja2's template cache). Those constraints are lifted; the
+# versions below are what Gradio 4.44.1 was tested against.
+jinja2>=3.1.0
+fastapi>=0.115.0,<0.116
+starlette>=0.38.6,<0.42
+pydantic>=2.7.0,<3
 pygit2==1.15.1
 opencv-contrib-python-headless==4.10.0.84
 httpx==0.27.0
