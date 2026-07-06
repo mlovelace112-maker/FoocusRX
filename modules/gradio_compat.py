@@ -3,18 +3,18 @@ Gradio 3/4 compatibility shim.
 
 Purpose
 -------
-Prep work for a future Gradio 4 migration. All call sites in webui.py go
-through the helpers here so the eventual pin bump only has to flip a
-single constant. Behavior on the current pinned Gradio (3.41.2) is
-unchanged.
+All Gradio-3-vs-4 differences are localized here so webui.py's call
+sites stay unchanged when Gradio bumps a major version. As of
+Gradio 4.44.1 (the currently pinned version) the shim returns 4.x
+kwargs; the 3.x branches are retained for completeness and to make the
+git history readable next to the historical pin.
 
 What this module intentionally does NOT do
 ------------------------------------------
 - Import from Gradio internals (`gradio_client.serializing`,
   `gradio.deprecation`, `gradio.components.base._Keywords`, etc.). Those
-  were deleted in Gradio 4 and would break the pin bump.
-- Subclass any Gradio component. `modules/gradio_hijack.py` still does
-  that on 3.41.2; this shim complements it.
+  were deleted in Gradio 4.
+- Subclass any Gradio component.
 
 Usage
 -----
@@ -27,8 +27,10 @@ Usage
     gr.Image(**gc.image_source('upload'), type='numpy', ...)
 
     # image-editor kwargs for sketch canvases (compat wrapper)
-    gc.sketch_image(label='Image', color='#FFFFFF', height=500,
-                    elem_id='inpaint_canvas', show_label=False)
+    canvas = gc.sketch_image(label='Image', color='#FFFFFF', height=500,
+                             elem_id='inpaint_canvas', show_label=False)
+    # In the handler, use extract_sketch_mask to unpack:
+    img, mask = gc.extract_sketch_mask(canvas_value)
 """
 
 from __future__ import annotations
@@ -80,45 +82,27 @@ def image_source(source: str | list[str]) -> dict:
 
 def sketch_image(*, label: str, color: str, height: int | None = None,
                  elem_id: str | None = None, show_label: bool = True,
-                 mask_opacity: float | None = None, image_type: str = 'numpy'):
+                 image_type: str = 'numpy'):
     """Return an image component configured as a sketch/mask canvas.
 
-    On Gradio 3.x this returns a ``gradio_hijack.Image`` with the
-    ``tool='sketch'`` + ``brush_color=...`` combo that Fooocus has always
-    used. On Gradio 4.x this will return a ``gr.ImageEditor`` with the
-    equivalent ``brush=gr.Brush(colors=[color], color_mode='fixed')``
-    configuration. The value returned to handlers changes shape between
-    the two lines; ``modules/async_worker.py`` handles both via
-    ``extract_mask()``.
+    Uses ``gr.ImageEditor`` on Gradio 4+ with a fixed-color brush.
+    The value returned to handlers is
+    ``{'background': np.ndarray, 'layers': [np.ndarray], 'composite': np.ndarray}``
+    with ``layers[0]`` carrying the brush strokes; call
+    :func:`extract_sketch_mask` to unpack.
 
-    Kept as a factory so the two sketch call sites stay symmetric and
-    the migration touches one file, not seven.
+    Kept as a factory so the two sketch call sites stay symmetric — if
+    a future Gradio release changes the ImageEditor API again, this is
+    the only place to touch.
     """
-    if IS_GRADIO_4:
-        kwargs = dict(
-            label=label,
-            sources=['upload'],
-            type=image_type,
-            brush=gr.Brush(colors=[color], color_mode='fixed'),
-            layers=False,
-        )
-        if height is not None:
-            kwargs['height'] = height
-        if elem_id is not None:
-            kwargs['elem_id'] = elem_id
-        if not show_label:
-            kwargs['show_label'] = False
-        return gr.ImageEditor(**kwargs)
-
-    # Gradio 3.x path — imported lazily to avoid a circular import
-    # (gradio_hijack imports this module transitively via webui.py).
-    from modules import gradio_hijack as grh
+    if gr is None:
+        raise RuntimeError('gradio is not installed')
     kwargs = dict(
         label=label,
-        source='upload',
+        sources=['upload'],
         type=image_type,
-        tool='sketch',
-        brush_color=color,
+        brush=gr.Brush(colors=[color], color_mode='fixed'),
+        layers=False,
     )
     if height is not None:
         kwargs['height'] = height
@@ -126,9 +110,49 @@ def sketch_image(*, label: str, color: str, height: int | None = None,
         kwargs['elem_id'] = elem_id
     if not show_label:
         kwargs['show_label'] = False
-    if mask_opacity is not None:
-        kwargs['mask_opacity'] = mask_opacity
-    return grh.Image(**kwargs)
+    return gr.ImageEditor(**kwargs)
+
+
+def update_sketch_brush_color(color: str):
+    """Return a ``gr.update`` payload that changes the brush color on a
+    sketch canvas across Gradio versions.
+
+    On Gradio 3 the ``Image(tool='sketch')`` component accepted a
+    ``brush_color=`` kwarg via ``gr.update(brush_color=...)``. On Gradio
+    4's ``ImageEditor`` the brush is a nested object; the equivalent
+    update swaps the whole ``brush=`` value.
+    """
+    if gr is None:
+        raise RuntimeError('gradio is not installed')
+    if IS_GRADIO_4:
+        return gr.update(brush=gr.Brush(colors=[color], color_mode='fixed'))
+    return gr.update(brush_color=color)
+
+
+def _mask_to_2d(mask):
+    """Return a single-channel 2D mask from a numpy array of arbitrary shape.
+
+    Gradio 3's ``Image(tool='sketch')`` mask was ``(H, W, 3)`` uint8 with
+    identical channels; taking channel 0 was the historical unpack.
+
+    Gradio 4's ``ImageEditor(layers=False)`` returns a single ``(H, W, 4)``
+    RGBA layer: the alpha channel carries the actual strokes and everywhere
+    the user did not paint is transparent. Taking channel 0 there would give
+    the RGB white value everywhere the layer contains anything, which is
+    wrong. We prefer alpha when present.
+    """
+    if mask is None:
+        return None
+    import numpy as np
+    if not isinstance(mask, np.ndarray):
+        return mask
+    if mask.ndim == 2:
+        return mask
+    if mask.ndim == 3:
+        if mask.shape[2] == 4:
+            return mask[:, :, 3]  # alpha
+        return mask[:, :, 0]
+    return mask
 
 
 def extract_sketch_mask(value):
@@ -153,7 +177,12 @@ def extract_sketch_mask(value):
         return value['image'], value['mask']
     # Gradio 4 shape (ImageEditor with layers=False)
     if 'background' in value and 'layers' in value:
+        import numpy as np
         background = value.get('background')
+        # Strip alpha from background if the ImageEditor returned RGBA — the
+        # rest of the pipeline expects (H, W, 3) uint8.
+        if isinstance(background, np.ndarray) and background.ndim == 3 and background.shape[2] == 4:
+            background = background[:, :, :3]
         layers = value.get('layers') or []
         mask = layers[0] if layers else None
         return background, mask

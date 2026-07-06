@@ -1,6 +1,7 @@
 import threading
 
 from extras.inpaint_mask import generate_mask_from_image, SAMOptions
+from modules import gradio_compat as gc
 from modules.patch import PatchSettings, patch_settings, patch_all
 import modules.config
 
@@ -880,17 +881,27 @@ def worker():
         if (async_task.current_tab == 'inpaint' or (
                 async_task.current_tab == 'ip' and async_task.mixing_image_prompt_and_inpaint)) \
                 and isinstance(async_task.inpaint_input_image, dict):
-            inpaint_image = async_task.inpaint_input_image['image']
-            inpaint_mask = async_task.inpaint_input_image['mask'][:, :, 0]
+            # Unpack via gradio_compat so both the historical Gradio-3
+            # ``{image, mask}`` shape and the Gradio-4 ImageEditor
+            # ``{background, layers, composite}`` shape are handled.
+            inpaint_image, _raw_mask = gc.extract_sketch_mask(async_task.inpaint_input_image)
+            inpaint_mask = gc._mask_to_2d(_raw_mask)
 
             if async_task.inpaint_advanced_masking_checkbox:
                 if isinstance(async_task.inpaint_mask_image_upload, dict):
-                    if (isinstance(async_task.inpaint_mask_image_upload['image'], np.ndarray)
-                            and isinstance(async_task.inpaint_mask_image_upload['mask'], np.ndarray)
-                            and async_task.inpaint_mask_image_upload['image'].ndim == 3):
+                    _upload_img, _upload_mask = gc.extract_sketch_mask(async_task.inpaint_mask_image_upload)
+                    _upload_mask_2d = gc._mask_to_2d(_upload_mask)
+                    if (isinstance(_upload_img, np.ndarray)
+                            and isinstance(_upload_mask_2d, np.ndarray)
+                            and _upload_img.ndim == 3):
+                        # Broadcast the 2D mask up to 3 channels so the
+                        # existing np.maximum(image, mask) call — which
+                        # blends the uploaded picture with its own drawn
+                        # mask into one composite RGB — keeps working.
+                        _upload_mask_3 = np.repeat(_upload_mask_2d[:, :, None], 3, axis=2)
                         async_task.inpaint_mask_image_upload = np.maximum(
-                            async_task.inpaint_mask_image_upload['image'],
-                            async_task.inpaint_mask_image_upload['mask'])
+                            _upload_img,
+                            _upload_mask_3)
                 if isinstance(async_task.inpaint_mask_image_upload,
                               np.ndarray) and async_task.inpaint_mask_image_upload.ndim == 3:
                     H, W, C = inpaint_image.shape
