@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 from abc import ABC, abstractmethod
@@ -86,7 +87,13 @@ def get_str(key: str, fallback: str | None, source_dict: dict, results: list, de
 def get_list(key: str, fallback: str | None, source_dict: dict, results: list, default=None):
     try:
         h = source_dict.get(key, source_dict.get(fallback, default))
-        h = eval(h)
+        # ast.literal_eval instead of eval: metadata comes from arbitrary
+        # PNG chunks / .txt sidecars a user drags onto the UI, so raw eval
+        # is a remote-code-execution primitive on any shared generated
+        # image. literal_eval accepts the same Python-literal shapes we
+        # actually use here (lists/tuples/numbers/strings) and rejects
+        # everything else.
+        h = ast.literal_eval(h)
         assert isinstance(h, list)
         results.append(h)
     except:
@@ -133,7 +140,9 @@ def get_steps(key: str, fallback: str | None, source_dict: dict, results: list, 
 def get_resolution(key: str, fallback: str | None, source_dict: dict, results: list, default=None):
     try:
         h = source_dict.get(key, source_dict.get(fallback, default))
-        width, height = eval(h)
+        # See get_list: literal_eval is the safe form for user-supplied
+        # metadata strings. Accepts "(1024, 1024)" / "[1024, 1024]".
+        width, height = ast.literal_eval(h)
         formatted = modules.config.add_ratio(f'{width}*{height}')
         if formatted in modules.config.available_aspect_ratios_labels:
             results.append(formatted)
@@ -194,7 +203,9 @@ def get_inpaint_method(key: str, fallback: str | None, source_dict: dict, result
 def get_adm_guidance(key: str, fallback: str | None, source_dict: dict, results: list, default=None):
     try:
         h = source_dict.get(key, source_dict.get(fallback, default))
-        p, n, e = eval(h)
+        # See get_list: literal_eval is the safe form for user-supplied
+        # metadata strings. Accepts "(1.5, 0.8, 0.3)" tuples.
+        p, n, e = ast.literal_eval(h)
         results.append(float(p))
         results.append(float(n))
         results.append(float(e))

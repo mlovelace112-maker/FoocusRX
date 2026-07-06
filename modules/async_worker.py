@@ -158,7 +158,25 @@ class AsyncTask:
         self.images_to_enhance_count = 0
         self.enhance_stats = {}
 
-async_tasks = []
+class _AsyncTaskList(list):
+    """A list that signals a threading.Event whenever an item is appended.
+
+    Callers (``webui.py``) still see a plain list — ``append`` and ``pop``
+    work the same — but the worker thread can ``_ready.wait()`` on the
+    event instead of polling ``len(async_tasks)`` in a 10 ms busy loop.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        import threading
+        self._ready = threading.Event()
+
+    def append(self, item):
+        super().append(item)
+        self._ready.set()
+
+
+async_tasks = _AsyncTaskList()
 
 
 class EarlyReturnException(BaseException):
@@ -1463,23 +1481,30 @@ def worker():
         return
 
     while True:
-        time.sleep(0.01)
-        if len(async_tasks) > 0:
-            task = async_tasks.pop(0)
+        # Block until a task is queued instead of polling every 10 ms.
+        # webui.py calls ``async_tasks.append(...)`` which sets the event
+        # (see _AsyncTaskList above). We clear it once the queue drains
+        # so the next append trips it again.
+        async_tasks._ready.wait()
+        if not async_tasks:
+            async_tasks._ready.clear()
+            continue
+        task = async_tasks.pop(0)
+        if not async_tasks:
+            async_tasks._ready.clear()
 
-            try:
-                handler(task)
-                if task.generate_image_grid:
-                    build_image_wall(task)
-                task.yields.append(['finish', task.results])
-                pipeline.prepare_text_encoder(async_call=True)
-            except:
-                traceback.print_exc()
-                task.yields.append(['finish', task.results])
-            finally:
-                if pid in modules.patch.patch_settings:
-                    del modules.patch.patch_settings[pid]
-    pass
+        try:
+            handler(task)
+            if task.generate_image_grid:
+                build_image_wall(task)
+            task.yields.append(['finish', task.results])
+            pipeline.prepare_text_encoder(async_call=True)
+        except:
+            traceback.print_exc()
+            task.yields.append(['finish', task.results])
+        finally:
+            if pid in modules.patch.patch_settings:
+                del modules.patch.patch_settings[pid]
 
 
 threading.Thread(target=worker, daemon=True).start()
