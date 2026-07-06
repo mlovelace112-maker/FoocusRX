@@ -143,6 +143,18 @@ Set `MTLFLASHATTN_SHIM=off` to fall back to stock MPS SDPA. Please
 report the failure to the mtlflashattn maintainers with your macOS and
 torch versions — the shim aims for full correctness parity.
 
+**Model download interrupted by Wi-Fi drop or laptop sleep**
+
+FoocusRX resumes interrupted downloads using HTTP `Range` requests.
+Partial files are stored as `<name>.partial` alongside a small
+`<name>.partial.meta` sidecar that pins the source URL and expected
+size; on relaunch the loader validates the sidecar before sending
+`Range: bytes=<offset>-` and falls back to a full restart if the server
+responds `200` (Range ignored) or the offset is inconsistent. Servers
+that return `416`/`400` on the Range request trigger one automatic
+retry from byte 0. Disable resume entirely with
+`FOOOCUS_DOWNLOAD_RESUME=0` (falls back to atomic full-file downloads).
+
 **Model file appears corrupted after Wi-Fi drop or laptop sleep**
 
 FoocusRX ships SHA256 hashes for all first-party model downloads in

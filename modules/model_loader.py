@@ -1,6 +1,8 @@
 import json
 import os
 import hashlib
+import urllib.error
+import urllib.request
 from urllib.parse import urlparse
 from typing import Optional
 
@@ -63,6 +65,180 @@ def _write_stamp(path: str, sha: str) -> None:
     except OSError:
         # Best effort. Missing stamp just means we rehash next time.
         pass
+
+
+def _partial_meta_path(partial_file: str) -> str:
+    """Sidecar next to a ``.partial`` file that records what it's a partial *of*."""
+    return partial_file + ".meta"
+
+
+def _read_partial_meta(partial_file: str) -> Optional[dict]:
+    try:
+        with open(_partial_meta_path(partial_file), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_partial_meta(partial_file: str, url: str, expected_size: Optional[int]) -> None:
+    try:
+        with open(_partial_meta_path(partial_file), "w", encoding="utf-8") as f:
+            json.dump({"url": url, "expected_size": expected_size}, f)
+    except OSError:
+        pass
+
+
+def _remove_partial(partial_file: str) -> None:
+    """Delete a ``.partial`` and its ``.meta`` sidecar, ignoring errors."""
+    for p in (partial_file, _partial_meta_path(partial_file)):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def _tqdm_bar(total: Optional[int], initial: int, desc: str):
+    """Return a ``tqdm`` progress bar if the library is available, else a
+    duck-typed no-op with ``.update()`` / ``.close()``.
+    """
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        class _NullBar:
+            def update(self, n): pass
+            def close(self): pass
+        return _NullBar()
+    return tqdm(
+        total=total,
+        initial=initial,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc=desc,
+        dynamic_ncols=True,
+    )
+
+
+def _download_with_resume(
+    url: str,
+    partial_file: str,
+    expected_size: Optional[int] = None,
+    progress: bool = True,
+    chunk_size: int = 1 << 20,  # 1 MiB
+) -> None:
+    """Download ``url`` into ``partial_file``, resuming an interrupted
+    ``.partial`` when possible.
+
+    Behavior:
+
+    * If ``partial_file`` exists and its ``.meta`` sidecar matches ``url``
+      and ``expected_size``, send ``Range: bytes=<len>-`` and append.
+    * If the server returns HTTP 206 Partial Content with a sensible
+      ``Content-Range``, we resume. Anything else (200 OK, wrong range,
+      HTTP error) falls back to a full restart: truncate and re-download
+      from byte 0.
+    * Progress bar reflects the true cumulative position when resuming.
+    * Set ``FOOOCUS_DOWNLOAD_RESUME=0`` to disable resume entirely.
+
+    Raises on unrecoverable network errors after resume fallback.
+    """
+    resume_enabled = os.environ.get("FOOOCUS_DOWNLOAD_RESUME", "1").strip() != "0"
+
+    existing_bytes = 0
+    if resume_enabled and os.path.exists(partial_file):
+        meta = _read_partial_meta(partial_file)
+        if (
+            meta
+            and meta.get("url") == url
+            and meta.get("expected_size") == expected_size
+        ):
+            existing_bytes = os.path.getsize(partial_file)
+            # Guard against a .partial that's already at or past the
+            # expected size (would ask for an empty/invalid range).
+            if expected_size is not None and existing_bytes >= expected_size:
+                existing_bytes = 0
+        else:
+            # Stale .partial from a different URL/size. Discard.
+            _remove_partial(partial_file)
+
+    if not os.path.exists(partial_file):
+        _write_partial_meta(partial_file, url, expected_size)
+
+    req = urllib.request.Request(url, headers={"User-Agent": "FoocusRX/1.0"})
+    open_mode = "wb"
+    resumed = False
+    if existing_bytes > 0:
+        req.add_header("Range", f"bytes={existing_bytes}-")
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            status = getattr(resp, "status", 200)
+            content_range = resp.headers.get("Content-Range")
+            content_length = resp.headers.get("Content-Length")
+
+            if existing_bytes > 0 and status == 206 and content_range:
+                # Sanity-check the returned range: must start at existing_bytes.
+                # Format: "bytes 12345-99999/100000"
+                try:
+                    start_str = content_range.split()[1].split("-")[0]
+                    if int(start_str) == existing_bytes:
+                        open_mode = "ab"
+                        resumed = True
+                        print(
+                            f"Resuming download from byte {existing_bytes:,}: \"{url}\""
+                        )
+                except (IndexError, ValueError):
+                    pass
+
+            if not resumed:
+                # Server ignored our Range or gave a wrong offset. Start over.
+                if existing_bytes > 0:
+                    print(
+                        f"Server declined resume (status={status}, range={content_range!r}); "
+                        f"restarting from byte 0."
+                    )
+                existing_bytes = 0
+                open_mode = "wb"
+
+            # Total size for the progress bar: prefer expected_size, else
+            # derive from headers (Content-Range total or Content-Length).
+            total = expected_size
+            if total is None and content_range:
+                try:
+                    total = int(content_range.split("/")[-1])
+                except ValueError:
+                    total = None
+            if total is None and content_length:
+                try:
+                    total = int(content_length) + existing_bytes
+                except ValueError:
+                    total = None
+
+            bar = _tqdm_bar(total, existing_bytes, os.path.basename(partial_file)) if progress else None
+            try:
+                with open(partial_file, open_mode) as out:
+                    while True:
+                        chunk = resp.read(chunk_size)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        if bar is not None:
+                            bar.update(len(chunk))
+            finally:
+                if bar is not None:
+                    bar.close()
+    except urllib.error.HTTPError as e:
+        # Server rejected Range; retry once without it.
+        if existing_bytes > 0 and e.code in (416, 400):
+            print(
+                f"Server rejected Range request (HTTP {e.code}); "
+                f"restarting from byte 0."
+            )
+            _remove_partial(partial_file)
+            return _download_with_resume(
+                url, partial_file, expected_size, progress, chunk_size
+            )
+        raise
 
 
 def load_file_from_url(
@@ -180,22 +356,26 @@ def load_file_from_url(
             print(f"  (couldn't quarantine, deleting instead: {e})")
             os.remove(cached_file)
 
-    # Clean up any leftover .partial from a previous interrupted run.
-    if os.path.exists(partial_file):
-        try:
-            os.remove(partial_file)
-        except OSError:
-            pass
-
+    # Any leftover .partial is now potentially resumable (see
+    # _download_with_resume). Only remove it if the .meta sidecar shows
+    # it belongs to a different URL/size, which the resume helper does
+    # for us.
     print(f'Downloading: "{url}" to {cached_file}')
-    from torch.hub import download_url_to_file
-    download_url_to_file(url, partial_file, progress=progress)
+    _download_with_resume(
+        url, partial_file, expected_size=expected_size, progress=progress
+    )
 
     err = _validate(partial_file)
     if err is not None:
         quarantine = cached_file + ".corrupt"
         try:
             os.rename(partial_file, quarantine)
+        except OSError:
+            pass
+        # Discard the .meta sidecar - the resume metadata is only valid
+        # while the .partial is still being appended to.
+        try:
+            os.remove(_partial_meta_path(partial_file))
         except OSError:
             pass
         raise RuntimeError(
@@ -207,4 +387,9 @@ def load_file_from_url(
     # Windows (Python 3.3+), which prevents a partial file from ever being
     # visible under its final name.
     os.replace(partial_file, cached_file)
+    # Clean up the .meta sidecar now that the .partial is gone.
+    try:
+        os.remove(_partial_meta_path(partial_file))
+    except OSError:
+        pass
     return cached_file
