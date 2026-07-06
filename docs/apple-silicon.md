@@ -121,6 +121,16 @@ Set `MTLFLASHATTN_SHIM=off` to fall back to stock MPS SDPA. Please
 report the failure to the mtlflashattn maintainers with your macOS and
 torch versions — the shim aims for full correctness parity.
 
+**Model file appears corrupted after Wi-Fi drop or laptop sleep**
+
+FoocusRX ships SHA256 hashes for all first-party model downloads in
+`models/hashes.json`. On launch the loader validates the on-disk file
+against the shipped hash and quarantines corrupted files as
+`<name>.corrupt` before triggering a fresh download. A `.sha256.ok`
+sidecar caches the last successful verification so we don't rehash
+unchanged multi-gigabyte checkpoints every launch. Disable with
+`FOOOCUS_SKIP_HASH_CHECK=1` (size checks still run).
+
 **Black images at resolutions above 2048px**
 
 Known upstream MPS bug in some torch versions. If it hits you,
