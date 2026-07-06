@@ -237,7 +237,14 @@ def get_previewer(model):
         del sd
         VAE_approx_model.eval()
 
-        if ldm_patched.modules.model_management.should_use_fp16():
+        # Prefer bf16 on M4+ Macs (FOOOCUS_PREFERRED_DTYPE=bfloat16). Falling
+        # back to fp32 on MPS as upstream did wastes ~2x VRAM on the approx
+        # decoder for no accuracy benefit.
+        _mps_hint = ldm_patched.modules.model_management._preferred_dtype_from_env(default=None)
+        if _mps_hint == torch.bfloat16:
+            VAE_approx_model.to(torch.bfloat16)
+            VAE_approx_model.current_type = torch.bfloat16
+        elif _mps_hint == torch.float16 or ldm_patched.modules.model_management.should_use_fp16():
             VAE_approx_model.half()
             VAE_approx_model.current_type = torch.float16
         else:

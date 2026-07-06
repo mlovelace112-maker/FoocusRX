@@ -71,6 +71,47 @@ def detect_memory_gb() -> int:
     return int(raw) // (1024 ** 3)
 
 
+def detect_performance_cores() -> int:
+    """Return the number of performance (P) cores, or 0 on failure.
+
+    On Apple Silicon, ``hw.perflevel0`` is the P-cluster and
+    ``hw.perflevel1`` is the E-cluster. We want P-cores for CPU-bound
+    torch work (matmul on CPU-fallback ops, tokenizer, image IO, etc.).
+    """
+    raw = _sysctl("hw.perflevel0.physicalcpu")
+    return int(raw) if raw.isdigit() else 0
+
+
+def _try_activate_mtlflashattn() -> str:
+    """Try to install the mtlflashattn SDPA shim. Returns a status string.
+
+    Never raises. Returns one of:
+      * 'not-installed' - package not importable, nothing to do.
+      * 'off'           - user disabled via MTLFLASHATTN_SHIM=off.
+      * 'activated'     - shim installed successfully.
+      * 'error:<msg>'   - import worked but install() blew up.
+    """
+    if os.environ.get("MTLFLASHATTN_SHIM", "").strip().lower() == "off":
+        return "off"
+    try:
+        import mtlflashattn  # noqa: F401
+    except Exception:
+        return "not-installed"
+    # The package normally auto-activates via a .pth entry, but we still
+    # try the explicit install path for robustness (some users pip-install
+    # into virtualenvs where .pth doesn't fire during dev-mode imports).
+    try:
+        from metal_flash_attn import sdpa as _mfa_sdpa  # type: ignore
+
+        if hasattr(_mfa_sdpa, "install"):
+            _mfa_sdpa.install()
+        return "activated"
+    except Exception as exc:
+        # Auto-activation via .pth may already have kicked in even if the
+        # explicit path failed. Treat this as best-effort.
+        return f"activated-implicit ({exc.__class__.__name__})"
+
+
 def configure(verbose: bool = True) -> dict:
     """Detect the chip and set MPS-tuning env vars. Idempotent.
 
@@ -133,6 +174,31 @@ def configure(verbose: bool = True) -> dict:
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"],
     )
 
+    # torch>=2.5 on Darwin: hint the backend to prefer the Metal
+    # implementation of ops that have both a Metal and a MPSGraph path.
+    # Harmless on older torch (env var is simply ignored).
+    os.environ.setdefault("PYTORCH_MPS_PREFER_METAL", "1")
+    applied["PYTORCH_MPS_PREFER_METAL"] = os.environ["PYTORCH_MPS_PREFER_METAL"]
+
+    # Cap CPU thread count to the number of performance cores. macOS
+    # will happily oversubscribe E-cores with BLAS threads, which
+    # actively hurts throughput on the P-core-heavy Pro/Max chips.
+    p_cores = detect_performance_cores()
+    info["perf_cores"] = p_cores
+    if p_cores > 0:
+        os.environ.setdefault("OMP_NUM_THREADS", str(p_cores))
+        os.environ.setdefault("MKL_NUM_THREADS", str(p_cores))
+        applied["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
+        applied["MKL_NUM_THREADS"] = os.environ["MKL_NUM_THREADS"]
+
+    # Try to activate mtlflashattn on M5+ (has per-GPU-core Neural
+    # Accelerators that the v2r kernel targets). Safe on any Mac -
+    # returns 'not-installed' if the package isn't present.
+    if gen >= 5:
+        status = _try_activate_mtlflashattn()
+        info["mtlflashattn"] = status
+        applied["mtlflashattn"] = status
+
     if verbose:
         _log(info)
     return info
@@ -142,11 +208,13 @@ def _log(info: dict) -> None:
     brand = info["brand"] or "unknown"
     gen = info["generation"]
     mem = info["memory_gb"]
+    p_cores = info.get("perf_cores", 0)
     gen_desc = f"M{gen}" if gen else "unknown generation"
-    print(f"[apple_silicon] detected: {brand} ({gen_desc}, {mem} GB unified memory)")
+    core_desc = f", {p_cores} P-cores" if p_cores else ""
+    print(f"[apple_silicon] detected: {brand} ({gen_desc}, {mem} GB unified memory{core_desc})")
     for k, v in info["applied"].items():
         print(f"[apple_silicon]   {k}={v}")
-    if gen >= 5:
+    if gen >= 5 and info.get("mtlflashattn") == "not-installed":
         print(
             "[apple_silicon] M5+ detected: for a 3-11x attention speedup, "
             "install mtlflashattn (`pip install mtlflashattn`)."
