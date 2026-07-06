@@ -11,11 +11,9 @@ psutil==6.0.0
 pytorch_lightning==2.3.3
 omegaconf==2.3.0
 gradio==4.44.1
-# Gradio 4.x supports pydantic 2 and modern starlette. The old Gradio 3.41.2
-# pin required jinja2==3.0.3 / fastapi==0.95.2 / starlette==0.27.0 /
-# pydantic==1.10.15 to work around upstream Fooocus issue #4180 (unhashable
-# dict inside jinja2's template cache). Those constraints are lifted; the
-# versions below are what Gradio 4.44.1 was tested against.
+# Web-stack pins tested against Gradio 4.44.1. Keep the fastapi/starlette
+# bounds tight — Gradio 4 pulls specific ABI slices from both. Bump only
+# together with the gradio line.
 jinja2>=3.1.0
 fastapi>=0.115.0,<0.116
 starlette>=0.38.6,<0.42

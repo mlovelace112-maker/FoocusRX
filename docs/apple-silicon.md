@@ -143,6 +143,16 @@ Set `MTLFLASHATTN_SHIM=off` to fall back to stock MPS SDPA. Please
 report the failure to the mtlflashattn maintainers with your macOS and
 torch versions — the shim aims for full correctness parity.
 
+**Old venv complains about pydantic / fastapi after pulling**
+
+FoocusRX moved to Gradio 4.44.1 and pydantic 2. If your virtualenv was
+created when this fork was still on Gradio 3.41.2, delete
+`python_embeded/` (or your venv directory) and let the launcher
+reinstall from `requirements_versions.txt`. Extensions or forks that
+subclassed `modules.gradio_hijack.Image` need to be updated to use
+`gr.Image` / `gr.ImageEditor` directly — the historical subclass was
+removed in the migration.
+
 **Model download interrupted by Wi-Fi drop or laptop sleep**
 
 FoocusRX resumes interrupted downloads using HTTP `Range` requests.
