@@ -56,3 +56,6 @@ user_path_config-deprecated.txt
 
 # One-shot install marker for mtlflashattn (see modules/apple_silicon.py).
 .mtlflashattn_install_attempted
+
+# Distributable installer bundles produced by scripts/build_mac_installer.sh.
+/dist
