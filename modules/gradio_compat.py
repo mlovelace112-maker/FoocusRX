@@ -41,7 +41,9 @@ except ImportError:  # pragma: no cover - environmental
     gr = None  # type: ignore[assignment]
 
 # Gradio-4 flag. Detect at import time; only affects the kwarg names we
-# emit. Stays False on Gradio 3.x — the currently pinned version.
+# emit. Currently pinned to Gradio 4.44.1, so this resolves to True at
+# runtime; the False branches are kept for readability against the
+# historical Gradio 3 pin.
 if gr is None:
     _MAJOR = 3
 else:
