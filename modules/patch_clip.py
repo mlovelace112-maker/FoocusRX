@@ -152,7 +152,13 @@ def patched_ClipVisionModel__init__(self, json_config):
     self.load_device = ldm_patched.modules.model_management.text_encoder_device()
     self.offload_device = ldm_patched.modules.model_management.text_encoder_offload_device()
 
-    if ldm_patched.modules.model_management.should_use_fp16(self.load_device, prioritize_performance=False):
+    # Honor FOOOCUS_PREFERRED_DTYPE on MPS (bf16 on M4+ Macs) instead of
+    # always falling back to fp32 there. On other devices keep upstream's
+    # fp16/fp32 selection driven by should_use_fp16.
+    _mps_hint = ldm_patched.modules.model_management._preferred_dtype_from_env(default=None)
+    if _mps_hint in (torch.bfloat16, torch.float16, torch.float32):
+        self.dtype = _mps_hint
+    elif ldm_patched.modules.model_management.should_use_fp16(self.load_device, prioritize_performance=False):
         self.dtype = torch.float16
     else:
         self.dtype = torch.float32

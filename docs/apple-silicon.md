@@ -15,6 +15,21 @@ anything imports torch and sets a handful of environment variables:
 | `FOOOCUS_HAS_NEURAL_ACCELERATORS`    | M5 or newer                         | `1`                                       |
 | `PYTORCH_MPS_HIGH_WATERMARK_RATIO`   | Unless user has set it              | `0.0` (≥32 GB), `0.85` (16–31), `0.7` (<16) |
 | `PYTORCH_ENABLE_MPS_FALLBACK`        | Unless user has set it              | `1`                                       |
+| `PYTORCH_MPS_PREFER_METAL`           | Always (Darwin arm64)               | `1` (ignored by torch < 2.5)              |
+| `OMP_NUM_THREADS` / `MKL_NUM_THREADS`| P-core count detected               | e.g. `6` on M5 Pro                        |
+
+`FOOOCUS_PREFERRED_DTYPE` is now wired into the model-management stack:
+
+- `ldm_patched/modules/model_management.py` — `unet_dtype`,
+  `text_encoder_dtype`, `should_use_fp16`, and the `VAE_DTYPE` selection
+  all honor the hint when running on MPS. Upstream returned `float32`
+  for every one of these on MPS, wasting ~2× memory.
+- `modules/patch_clip.py` and `modules/core.py` — CLIP-vision and
+  VAE-approx models pick up bf16 too.
+- Attention: `ENABLE_PYTORCH_ATTENTION` is now set on MPS whenever
+  torch ≥ 2. This routes attention through `F.scaled_dot_product_attention`
+  (the shim point mtlflashattn hooks) instead of the O(N²) sub-quadratic
+  fallback.
 
 The chip is read from `sysctl machdep.cpu.brand_string`, e.g. `Apple M5 Pro`,
 and the generation is parsed from the M-number.
@@ -38,8 +53,13 @@ worth installing:
 ### `mtlflashattn` — attention (highly recommended)
 
 ```bash
+pip install -r requirements_mac.txt   # or:
 pip install mtlflashattn
 ```
+
+FoocusRX detects `mtlflashattn` at launch and prints `activated` or
+`not-installed` in the `[apple_silicon]` boot log. On M5+ chips, when
+the package is missing, it also prints an install hint.
 
 - **Speed:** 3–11× faster than stock fused MPS SDPA on M5, driven by
   the Neural Accelerators via TensorOps `matmul2d`.
@@ -94,6 +114,12 @@ Use `scripts/mac_launch.sh` — it clears proxy env vars and sets
 `NO_PROXY=localhost,127.0.0.1,::1` so Gradio's httpx-based health probe
 stops routing loopback through a proxy. See
 [gradio-app/gradio#4046](https://github.com/gradio-app/gradio/issues/4046).
+
+**mtlflashattn imports fine but produces artifacts**
+
+Set `MTLFLASHATTN_SHIM=off` to fall back to stock MPS SDPA. Please
+report the failure to the mtlflashattn maintainers with your macOS and
+torch versions — the shim aims for full correctness parity.
 
 **Black images at resolutions above 2048px**
 

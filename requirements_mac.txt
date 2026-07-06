@@ -1,0 +1,22 @@
+# Optional Mac-only extras.
+#
+# Install with:
+#   pip install -r requirements_mac.txt
+#
+# These are strictly opt-in performance enhancements. FoocusRX runs fine
+# on Apple Silicon without them; installing them just makes it faster.
+
+# Metal Flash Attention shim for MPS.
+#
+# Patches torch's scaled_dot_product_attention with a Metal kernel that
+# is 3-11x faster than the stock fused MPS SDPA on M5-class chips and
+# also fixes a silent numerical-correctness bug in stock MPS SDPA past
+# roughly 4k tokens. Requires torch >= 2.5 (needs torch.mps.compile_shader).
+#
+# Disable at runtime with `MTLFLASHATTN_SHIM=off` if you hit issues.
+# https://pypi.org/project/mtlflashattn/
+mtlflashattn ; sys_platform == "darwin" and platform_machine == "arm64"
+
+# Optional: FP8/FP4 for torch MPS. Useful for future large-model work but
+# not required by SDXL; leaving commented so casual users don't pull it.
+# fp4-fp8-for-torch-mps ; sys_platform == "darwin" and platform_machine == "arm64"

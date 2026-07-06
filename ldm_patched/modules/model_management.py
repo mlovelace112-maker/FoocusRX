@@ -1,9 +1,29 @@
+import os
 import psutil
 from enum import Enum
 from ldm_patched.modules.args_parser import args
 import ldm_patched.modules.utils
 import torch
 import sys
+
+
+def _preferred_dtype_from_env(default=None):
+    """Read FOOOCUS_PREFERRED_DTYPE and return a torch dtype (or ``default``).
+
+    Set by ``modules.apple_silicon.configure()`` to ``bfloat16`` on M4+ Macs
+    where bf16 has native hardware support. Downstream code that used to
+    hard-code ``torch.float16`` can call this to honor the hint. Falls back to
+    ``default`` when the env var is unset or holds a value we don't recognize.
+    """
+    val = os.environ.get("FOOOCUS_PREFERRED_DTYPE", "").strip().lower()
+    if val in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    if val in ("fp16", "float16", "half"):
+        return torch.float16
+    if val in ("fp32", "float32", "float"):
+        return torch.float32
+    return default
+
 
 class VRAMState(Enum):
     DISABLED = 0    #No vram present: no need to move models to vram
@@ -183,11 +203,31 @@ try:
     if is_intel_xpu():
         if args.attention_split == False and args.attention_quad == False:
             ENABLE_PYTORCH_ATTENTION = True
+    # MPS: prefer PyTorch SDPA over sub-quadratic on Apple Silicon.
+    # torch>=2 ships an MPS SDPA kernel that is dramatically faster than
+    # the pure-python sub-quad path (and is the shim point that
+    # mtlflashattn hooks into on M5+). Only opt in when the user hasn't
+    # explicitly requested a different attention flavor.
+    if cpu_state == CPUState.MPS:
+        torch_version = torch.version.__version__
+        if int(torch_version[0]) >= 2:
+            if not args.attention_split and not args.attention_quad:
+                ENABLE_PYTORCH_ATTENTION = True
 except:
     pass
 
 if is_intel_xpu():
     VAE_DTYPE = torch.bfloat16
+
+# Apple Silicon: honor FOOOCUS_PREFERRED_DTYPE (set to bf16 on M4+ by
+# modules.apple_silicon). M1-M3 have no native bf16 hardware so the env
+# var is only set from M4 onwards; still, be defensive and fall back to
+# fp32 for VAE on any MPS device that doesn't set the hint (upstream
+# default was fp32 already).
+if cpu_state == CPUState.MPS:
+    _mps_dtype_hint = _preferred_dtype_from_env(default=None)
+    if _mps_dtype_hint is not None:
+        VAE_DTYPE = _mps_dtype_hint
 
 if args.vae_in_cpu:
     VAE_DTYPE = torch.float32
@@ -499,6 +539,13 @@ def unet_dtype(device=None, model_params=0):
         return torch.float8_e4m3fn
     if args.unet_in_fp8_e5m2:
         return torch.float8_e5m2
+    # On MPS, prefer the env-hinted dtype (bf16 on M4+) before falling
+    # through to the fp16/fp32 path. Upstream should_use_fp16 hard-returns
+    # False for MPS, so without this hook every M-series Mac gets fp32.
+    if cpu_state == CPUState.MPS:
+        hinted = _preferred_dtype_from_env(default=None)
+        if hinted is not None:
+            return hinted
     if should_use_fp16(device=device, model_params=model_params):
         return torch.float16
     return torch.float32
@@ -548,6 +595,13 @@ def text_encoder_dtype(device=None):
 
     if is_device_cpu(device):
         return torch.float16
+
+    # On MPS, honor the env-hinted dtype (bf16 on M4+). Upstream would
+    # return float32 here because should_use_fp16 is False for MPS.
+    if cpu_state == CPUState.MPS:
+        hinted = _preferred_dtype_from_env(default=None)
+        if hinted is not None:
+            return hinted
 
     if should_use_fp16(device, prioritize_performance=False):
         return torch.float16
@@ -713,7 +767,11 @@ def should_use_fp16(device=None, model_params=0, prioritize_performance=True):
 
     if device is not None: #TODO
         if is_device_mps(device):
-            return False
+            # MPS bf16 is preferred over fp16 on M4+ (native hardware).
+            # If the env hint is set to fp16 we say yes; otherwise leave
+            # the historical False so callers pick fp32 or hit the bf16
+            # branch in unet_dtype/text_encoder_dtype above.
+            return _preferred_dtype_from_env(default=None) == torch.float16
 
     if FORCE_FP32:
         return False
