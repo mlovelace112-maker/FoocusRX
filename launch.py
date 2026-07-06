@@ -7,8 +7,11 @@ root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(root)
 os.chdir(root)
 
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+# NOTE: upstream set PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 unconditionally,
+# which disables MPS's OOM guard entirely. FoocusRX picks a saner default
+# in modules.apple_silicon.configure() based on total unified memory, but
+# preserves any explicit override the user has set.
 if "GRADIO_SERVER_PORT" not in os.environ:
     os.environ["GRADIO_SERVER_PORT"] = "7865"
 
@@ -18,6 +21,15 @@ if "GRADIO_SERVER_PORT" not in os.environ:
 # HuggingFace Hub, rembg, etc.) into a MITM opportunity. FoocusRX removes it.
 # If a user hits an SSL error behind a corporate CA, set SSL_CERT_FILE or
 # REQUESTS_CA_BUNDLE to the CA bundle path instead.
+
+# Apple Silicon chip detection + MPS tuning. No-op on non-Mac. Must run
+# before anything imports torch so that PYTORCH_MPS_* env vars take effect.
+try:
+    from modules.apple_silicon import configure as _configure_apple_silicon
+    _configure_apple_silicon()
+except Exception as _e:
+    # Never let detection failure block launch.
+    print(f"[apple_silicon] detection skipped: {_e!r}")
 
 import platform
 import fooocus_version
@@ -30,10 +42,36 @@ REINSTALL_ALL = False
 TRY_INSTALL_XFORMERS = False
 
 
-def prepare_environment():
+def _default_torch_command():
+    """Pick a torch install command that matches the platform.
+
+    Upstream Fooocus hard-coded a CUDA 12.1 index URL and torch==2.1.0.
+    On Apple Silicon that pulls the CPU wheel (no MPS-optimized build)
+    and on any newer chip generation the pinned 2.1.0 is out of date.
+
+    FoocusRX behavior:
+      * Apple Silicon (arm64 Darwin) -> torch>=2.5 from PyPI (no index URL).
+        2.5 is the first release with torch.mps.compile_shader, which the
+        M5-class Flash Attention kernels (mtlflashattn, etc.) depend on.
+      * Intel Mac -> torch>=2.5 from PyPI, CPU wheel.
+      * Linux/Windows -> keep the CUDA 12.1 wheel as before (unchanged).
+    Users can still override with TORCH_COMMAND / TORCH_INDEX_URL.
+    """
+    if os.environ.get('TORCH_COMMAND'):
+        return os.environ['TORCH_COMMAND']
+
+    if platform.system() == "Darwin":
+        # PyPI ships MPS-enabled arm64 wheels; no --extra-index-url needed.
+        return "pip install --upgrade 'torch>=2.5,<3' 'torchvision>=0.20,<1'"
+
+    # Non-Mac: keep the historical CUDA 12.1 default so we don't break
+    # existing NVIDIA installs.
     torch_index_url = os.environ.get('TORCH_INDEX_URL', "https://download.pytorch.org/whl/cu121")
-    torch_command = os.environ.get('TORCH_COMMAND',
-                                   f"pip install torch==2.1.0 torchvision==0.16.0 --extra-index-url {torch_index_url}")
+    return f"pip install torch==2.1.0 torchvision==0.16.0 --extra-index-url {torch_index_url}"
+
+
+def prepare_environment():
+    torch_command = _default_torch_command()
     requirements_file = os.environ.get('REQS_FILE', "requirements_versions.txt")
 
     print(f"Python {sys.version}")
