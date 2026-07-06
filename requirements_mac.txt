@@ -1,10 +1,15 @@
 # Optional Mac-only extras.
 #
-# Install with:
-#   pip install -r requirements_mac.txt
+# You do NOT normally need to run this file. Since PR #16 the launcher
+# auto-installs `mtlflashattn` on Apple Silicon (M4+) on the first run,
+# so this file exists mostly for:
 #
-# These are strictly opt-in performance enhancements. FoocusRX runs fine
-# on Apple Silicon without them; installing them just makes it faster.
+#   * People who want to pre-install the shim before their first launch.
+#   * Non-launcher use (importing FoocusRX modules from a notebook, etc.).
+#   * Reproducing an environment via `pip install -r requirements_mac.txt`.
+#
+# The auto-install can be disabled with FOOOCUS_AUTO_INSTALL_MTLFLASHATTN=0.
+# See docs/apple-silicon.md for the full env-var table.
 
 # Metal Flash Attention shim for MPS.
 #

@@ -50,16 +50,22 @@ dedicated matmul hardware inside every GPU core. Stock PyTorch MPS
 doesn't fully exploit these yet, but community kernels do. Two are
 worth installing:
 
-### `mtlflashattn` — attention (highly recommended)
+### `mtlflashattn` — attention (auto-installed on M4+)
 
-```bash
-pip install -r requirements_mac.txt   # or:
-pip install mtlflashattn
-```
+The launcher auto-installs `mtlflashattn` on the first run on any
+Apple Silicon Mac with an M4 or newer chip. You do not need to run
+`pip install` manually. A one-time marker file
+(`.mtlflashattn_install_attempted`) is written to the repo root so we
+never retry the install more than once per venv — delete it and
+relaunch to retry.
 
-FoocusRX detects `mtlflashattn` at launch and prints `activated` or
-`not-installed` in the `[apple_silicon]` boot log. On M5+ chips, when
-the package is missing, it also prints an install hint.
+Opt-out: `FOOOCUS_AUTO_INSTALL_MTLFLASHATTN=0` skips the install
+entirely. Pre-install manually with `pip install mtlflashattn` (or
+`pip install -r requirements_mac.txt`) if you want a specific version.
+
+On launch, FoocusRX prints `activated` / `not-installed` /
+`activated-implicit` in the `[apple_silicon]` boot log next to the
+other tuning info.
 
 - **Speed:** 3–11× faster than stock fused MPS SDPA on M5, driven by
   the Neural Accelerators via TensorOps `matmul2d`.
