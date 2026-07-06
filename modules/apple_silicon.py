@@ -219,6 +219,11 @@ def _log(info: dict) -> None:
             "[apple_silicon] M5+ detected: for a 3-11x attention speedup, "
             "install mtlflashattn (`pip install mtlflashattn`)."
         )
+    if gen >= 5 and not os.environ.get("FOOOCUS_TORCH_COMPILE"):
+        print(
+            "[apple_silicon] M5+ detected: set FOOOCUS_TORCH_COMPILE=1 for "
+            "an additional 10-30% throughput (30-120s one-time warmup)."
+        )
 
 
 if __name__ == "__main__":
