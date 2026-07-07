@@ -55,6 +55,76 @@ else:
 IS_GRADIO_4 = _MAJOR >= 4
 
 
+def _patch_api_info_bool_schema() -> None:
+    """Work around gradio-app/gradio#8237 in gradio-client 1.3.x.
+
+    Symptom, seen live at first HTTP hit to the loopback health probe:
+
+        File ".../gradio_client/utils.py", line 863, in get_type
+            if "const" in schema:
+        TypeError: argument of type 'bool' is not iterable
+
+    Root cause: `get_api_info()` recurses through the OpenAPI schema. When a
+    component emits `additionalProperties: true` (a bool, not a dict) — which
+    happens for e.g. `gr.Number(precision=0)` and several others in our UI —
+    `_json_schema_to_python_type()` forwards that bool into `get_type()`, and
+    `get_type()` blindly does `"const" in schema`, which raises on bool.
+
+    The knock-on effect is nastier than it looks: the health probe crashes,
+    Gradio's loopback readiness check declares the server unreachable, and
+    then throws the misleading:
+
+        ValueError: When localhost is not accessible, a shareable link must be
+        created. Please set share=True ...
+
+    So the user thinks it's a networking / proxy issue when it's actually a
+    schema-serialization crash. This blocks the app from ever finishing
+    startup on Gradio 4.44.1 with the components we use.
+
+    Fix: monkeypatch `_json_schema_to_python_type` so a bool schema returns
+    early with the JSON-Schema-correct answer:
+
+      * `additionalProperties: true`  →  any value allowed  →  "Any"
+      * `additionalProperties: false` →  no extra properties →  "None"
+
+    Everything else falls through to the original implementation. This is the
+    community-standard workaround while Gradio 4.44.x stays pinned; upstream
+    fixed it in 4.45.x but the fastapi/pydantic/starlette pin quartet we rely
+    on won't lift until we do a separate migration.
+    """
+    try:
+        from gradio_client import utils as _gcu  # type: ignore
+    except Exception:
+        # No gradio_client in this environment (unit-test or Gradio 3
+        # fallback). Nothing to patch, and nothing broken to patch it for.
+        return
+
+    if getattr(_gcu, "_foocusrx_bool_schema_patch", False):
+        return  # idempotent
+
+    _orig = getattr(_gcu, "_json_schema_to_python_type", None)
+    if _orig is None:
+        return  # different gradio_client layout; leave it alone.
+
+    def _patched(schema, defs):
+        # Bool schemas are legal per JSON Schema; the shipped 4.44.1
+        # implementation doesn't handle them. Handle them here and
+        # delegate everything else to the original function.
+        if isinstance(schema, bool):
+            return "Any" if schema else "None"
+        return _orig(schema, defs)
+
+    _gcu._json_schema_to_python_type = _patched
+    _gcu._foocusrx_bool_schema_patch = True
+
+
+# Apply the patch at import time so that any downstream module (in
+# particular webui.py, which imports gradio and then registers routes
+# during startup) sees the patched function before Gradio's health
+# probe fires. Cheap and idempotent.
+_patch_api_info_bool_schema()
+
+
 def js_kwarg(js_code: str | None) -> dict:
     """Return the correct kwarg dict for the event-listener JS hook.
 
