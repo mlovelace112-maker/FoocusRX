@@ -108,6 +108,15 @@ def prepare_environment():
         status = _auto_install_mfa()
         if status not in ("not-apple-silicon", "gen-too-low", "already-installed"):
             print(f"[apple_silicon] mtlflashattn auto-install: {status}")
+        if status == "previously-tried":
+            # Give the user an actionable one-liner. This is the single
+            # most common reason mtlflashattn stays inactive after a
+            # failed first attempt (e.g. no wheel for a brand-new chip).
+            print(
+                "[apple_silicon]   To retry the install now: "
+                "`rm .mtlflashattn_install_attempted && ./scripts/mac_launch.sh`. "
+                "The marker is automatically cleared on FoocusRX version bumps."
+            )
         # If we just installed it, run the activation path so the shim
         # is live in the current process instead of waiting for the
         # next launch to pick it up.
