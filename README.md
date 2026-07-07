@@ -50,7 +50,22 @@ See [`docs/apple-silicon.md`](./docs/apple-silicon.md).
   opt-out.
 - **PR #17** — macOS installer (`scripts/install_mac.command`) and
   releasable installer bundle (`scripts/build_mac_installer.sh`).
+- **PR #18** — Installer rejects Python 3.13+ and offers to
+  `brew install python@3.12` instead.
+- **PR #19** — Dropped a leftover `gr.Button(label=...)` from Gradio 3.
+- **PR #20** — Patched a `gradio_client` bool-schema crash and pinned
+  `setuptools<82`.
+- **PR #21** — Fixed `gr.Dataset.update`, tuned the MPS low watermark,
+  and fixed the `mtlflashattn` install marker.
+- Cast `bfloat16` tensors to `float32` before `.numpy()` in
+  `modules/core.py`; NumPy has no native bfloat16 support, so both the
+  live preview and the final image decode crashed with
+  `TypeError: Got unsupported ScalarType BFloat16` on Apple Silicon.
 
 ## Upstream README
 
-The original Fooocus documentation lives in [`readme.md`](./readme.md).
+The original Fooocus documentation lives in
+[`docs/upstream-readme.md`](./docs/upstream-readme.md). It was
+previously tracked as `readme.md`, which on case-insensitive
+filesystems (macOS/Windows) collided with `README.md` on disk — the
+last one git touched would silently overwrite the other's content.
