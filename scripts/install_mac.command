@@ -187,7 +187,11 @@ source "$VENV_DIR/bin/activate"
 
 # ---- 5. install requirements ---------------------------------------------
 info "Upgrading pip / wheel / setuptools inside venv"
-python -m pip install --upgrade --quiet pip wheel setuptools
+# Pin setuptools < 82. Torch 2.12.x for MPS declares setuptools<82 as an
+# upper bound, and pip's resolver logs the conflict but still installs
+# the newer setuptools, which then breaks torch's own build tools when
+# any package touches torch.utils.cpp_extension. Cap it explicitly.
+python -m pip install --upgrade --quiet pip wheel "setuptools<82"
 
 info "Installing requirements_versions.txt (this can take several minutes)"
 python -m pip install --quiet -r requirements_versions.txt
