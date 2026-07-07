@@ -125,6 +125,47 @@ def _marker_dir() -> str:
 _MTLFLASHATTN_MARKER = ".mtlflashattn_install_attempted"
 
 
+def _current_fooocus_version() -> str:
+    """Best-effort read of the FoocusRX version string. Empty on failure."""
+    try:
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        repo_root = os.path.dirname(module_dir)
+        ns: dict = {}
+        with open(os.path.join(repo_root, "fooocus_version.py")) as fh:
+            exec(fh.read(), ns)  # noqa: S102 - trusted local file
+        return str(ns.get("version", ""))
+    except Exception:
+        return ""
+
+
+def _marker_is_stale(marker_path: str) -> bool:
+    """Return True if the marker was written by a different FoocusRX version
+    than the one currently running. This lets a version bump automatically
+    retry the mtlflashattn install once — critical because new chip generations
+    (e.g. M5) may lack wheels at first ship but gain them within days, and we
+    don't want users stuck on 'previously-tried' forever.
+    """
+    current = _current_fooocus_version()
+    if not current:
+        return False
+    try:
+        with open(marker_path) as fh:
+            content = fh.read()
+    except OSError:
+        return False
+    # Marker format is 'attempted <version>\n' as of 2.6.4; older markers
+    # (just 'attempted\n') are treated as stale so they get one retry on
+    # first upgrade.
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith("attempted"):
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[1] == current:
+                return False
+            return True
+    return True
+
+
 def auto_install_mtlflashattn(*, log=print) -> str:
     """Attempt a one-shot install of mtlflashattn on the first launch.
 
@@ -185,7 +226,16 @@ def auto_install_mtlflashattn(*, log=print) -> str:
 
     marker = os.path.join(_marker_dir(), _MTLFLASHATTN_MARKER)
     if os.path.exists(marker):
-        return "previously-tried"
+        if _marker_is_stale(marker):
+            # New FoocusRX version since the last attempt — retry once. This
+            # covers the common case where a user upgrades and a wheel is
+            # now available on PyPI for their chip.
+            try:
+                os.remove(marker)
+            except OSError:
+                return "previously-tried"
+        else:
+            return "previously-tried"
 
     # Torch must be present with mps.compile_shader before we can install
     # mtlflashattn — its build imports torch and compiles a Metal shader.
@@ -206,7 +256,7 @@ def auto_install_mtlflashattn(*, log=print) -> str:
     # succeeds, the marker just signifies 'we've made an attempt'.
     try:
         with open(marker, "w") as fh:
-            fh.write("attempted\n")
+            fh.write(f"attempted {_current_fooocus_version()}\n")
     except OSError:
         # Read-only filesystem or permissions issue — don't loop, but
         # don't try to install either.
@@ -300,6 +350,31 @@ def configure(verbose: bool = True) -> dict:
             ratio = "0.7"
         os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = ratio
         applied["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = ratio
+
+    # PYTORCH_MPS_LOW_WATERMARK_RATIO must also be set explicitly. On
+    # recent torch (2.5+), when the user or FoocusRX sets *only* the high
+    # ratio, torch derives the low ratio via a multiplier that on shared-
+    # memory Apple Silicon can compute a value > 1.0 (observed: 1.4 with
+    # high=0.85). Torch then rejects it at first `.to('mps')` with
+    # `RuntimeError: invalid low watermark ratio 1.4`. Pin it below high.
+    # The low ratio controls when MPS starts *proactively* releasing
+    # cached blocks; a value slightly below high gives the allocator a
+    # small headroom band to work in.
+    if "PYTORCH_MPS_LOW_WATERMARK_RATIO" not in os.environ:
+        high_str = os.environ.get("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.85")
+        try:
+            high = float(high_str)
+        except ValueError:
+            high = 0.85
+        # high=0.0 is the "disable cap" sentinel; pair it with a low that
+        # is also disabled (0.0) so torch doesn't try to derive one.
+        if high <= 0.0:
+            low = 0.0
+        else:
+            low = max(0.0, min(high - 0.05, high * 0.9))
+        low_str = f"{low:.2f}"
+        os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = low_str
+        applied["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = low_str
 
     # MPS CPU fallback for ops the backend doesn't implement yet.
     # Upstream sets this too; we set it via setdefault to avoid clobbering

@@ -123,7 +123,7 @@ def inpaint_mode_change(mode, inpaint_engine_version):
     if mode == modules.flags.inpaint_option_detail:
         return [
             gr.update(visible=True), gr.update(visible=False, value=[]),
-            gr.Dataset.update(visible=True, samples=modules.config.example_inpaint_prompts),
+            gr.update(visible=True, samples=modules.config.example_inpaint_prompts),
             False, 'None', 0.5, 0.0
         ]
 
@@ -133,13 +133,13 @@ def inpaint_mode_change(mode, inpaint_engine_version):
     if mode == modules.flags.inpaint_option_modify:
         return [
             gr.update(visible=True), gr.update(visible=False, value=[]),
-            gr.Dataset.update(visible=False, samples=modules.config.example_inpaint_prompts),
+            gr.update(visible=False, samples=modules.config.example_inpaint_prompts),
             True, inpaint_engine_version, 1.0, 0.0
         ]
 
     return [
         gr.update(visible=False, value=''), gr.update(visible=True),
-        gr.Dataset.update(visible=False, samples=modules.config.example_inpaint_prompts),
+        gr.update(visible=False, samples=modules.config.example_inpaint_prompts),
         False, inpaint_engine_version, 1.0, 0.618
     ]
 
@@ -328,8 +328,8 @@ with shared.gradio_root:
 
                                 inpaint_mask_model.change(lambda x: [gr.update(visible=x == 'u2net_cloth_seg')] +
                                                                     [gr.update(visible=x == 'sam')] * 2 +
-                                                                    [gr.Dataset.update(visible=x == 'sam',
-                                                                                       samples=modules.config.example_enhance_detection_prompts)],
+                                                                    [gr.update(visible=x == 'sam',
+                                                                               samples=modules.config.example_enhance_detection_prompts)],
                                                           inputs=inpaint_mask_model,
                                                           outputs=[inpaint_mask_cloth_category,
                                                                    inpaint_mask_dino_prompt_text,
@@ -536,8 +536,8 @@ with shared.gradio_root:
                         enhance_mask_model.change(
                             lambda x: [gr.update(visible=x == 'u2net_cloth_seg')] +
                                       [gr.update(visible=x == 'sam')] * 2 +
-                                      [gr.Dataset.update(visible=x == 'sam',
-                                                         samples=modules.config.example_enhance_detection_prompts)],
+                                      [gr.update(visible=x == 'sam',
+                                                 samples=modules.config.example_enhance_detection_prompts)],
                             inputs=enhance_mask_model,
                             outputs=[enhance_mask_cloth_category, enhance_mask_dino_prompt_text, sam_options,
                                      example_enhance_mask_dino_prompt_text],
