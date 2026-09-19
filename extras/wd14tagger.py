@@ -44,7 +44,9 @@ def default_interrogator(image_rgb, threshold=0.35, character_threshold=0.85, ex
     if global_model is not None:
         model = global_model
     else:
-        model = InferenceSession(model_onnx_filename, providers=ort.get_available_providers())
+        from modules.apple_silicon import onnxruntime_providers
+        providers = onnxruntime_providers() or ort.get_available_providers()
+        model = InferenceSession(model_onnx_filename, providers=providers)
         global_model = model
 
     input = model.get_inputs()[0]

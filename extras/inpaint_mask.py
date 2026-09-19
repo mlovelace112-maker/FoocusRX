@@ -59,9 +59,12 @@ def generate_mask_from_image(image: np.ndarray, mask_model: str = 'sam', extras=
         image = image['image']
 
     if mask_model != 'sam' or sam_options is None:
+        from modules.apple_silicon import onnxruntime_providers
+        session_kwargs = dict(extras)
+        session_kwargs.setdefault('providers', onnxruntime_providers())
         result = remove(
             image,
-            session=new_session(mask_model, **extras),
+            session=new_session(mask_model, **session_kwargs),
             only_mask=True,
             **extras
         )

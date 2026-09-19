@@ -82,6 +82,48 @@ def detect_performance_cores() -> int:
     return int(raw) if raw.isdigit() else 0
 
 
+_onnx_providers_logged = False
+
+
+def onnxruntime_providers(log=print) -> list[str] | None:
+    """Preferred onnxruntime execution provider order for the small ONNX
+    side models FoocusRX runs directly (wd14 tagger, rembg background
+    removal): CoreML first so Apple's ANE/GPU handles them, CPU as the
+    fallback onnxruntime always ships.
+
+    This does NOT put the SDXL UNet on the Neural Engine — PyTorch/MPS
+    has no ANE backend, and getting the main diffusion model onto the ANE
+    would mean a full CoreML conversion (Apple's ml-stable-diffusion
+    approach), which is a separate pipeline incompatible with Fooocus's
+    dynamic LoRA/ControlNet stack and arbitrary user-supplied checkpoints.
+    This only covers the auxiliary models that are already plain ONNX.
+
+    Returns None (onnxruntime's own default ordering) on non-Mac or when
+    disabled via FOOOCUS_DISABLE_COREML=1, so callers can pass the result
+    straight through to ``providers=``.
+    """
+    global _onnx_providers_logged
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        return None
+    if os.environ.get("FOOOCUS_DISABLE_COREML", "").strip() == "1":
+        return None
+    try:
+        import onnxruntime as ort
+        available = ort.get_available_providers()
+    except Exception:
+        return None
+    if "CoreMLExecutionProvider" not in available:
+        return None
+    providers = ["CoreMLExecutionProvider"]
+    if "CPUExecutionProvider" in available:
+        providers.append("CPUExecutionProvider")
+    if not _onnx_providers_logged:
+        log(f"[apple_silicon] onnxruntime side models (tagger/background "
+            f"removal) will prefer the Neural Engine via CoreML: {providers}")
+        _onnx_providers_logged = True
+    return providers
+
+
 def _try_activate_mtlflashattn() -> str:
     """Try to install the mtlflashattn SDPA shim. Returns a status string.
 
@@ -94,7 +136,12 @@ def _try_activate_mtlflashattn() -> str:
     if os.environ.get("MTLFLASHATTN_SHIM", "").strip().lower() == "off":
         return "off"
     try:
-        import mtlflashattn  # noqa: F401
+        # The `mtlflashattn` PyPI distribution ships no top-level
+        # `mtlflashattn` module — only `metal_flash_attn` (the actual
+        # kernel) and a private `.pth`-activated finder. Checking for
+        # `mtlflashattn` itself always raises ModuleNotFoundError even
+        # when the shim is correctly installed and active.
+        import metal_flash_attn  # noqa: F401
     except Exception:
         return "not-installed"
     # The package normally auto-activates via a .pth entry, but we still
@@ -213,9 +260,11 @@ def auto_install_mtlflashattn(*, log=print) -> str:
         return "not-apple-silicon"
 
     # Cheap import check first — avoids ever writing the marker if
-    # someone already pip-installed mtlflashattn out-of-band.
+    # someone already pip-installed mtlflashattn out-of-band. See the
+    # comment in _try_activate_mtlflashattn: the importable module is
+    # `metal_flash_attn`, not `mtlflashattn`.
     try:
-        import mtlflashattn  # noqa: F401
+        import metal_flash_attn  # noqa: F401
         return "already-installed"
     except Exception:
         pass
@@ -290,7 +339,7 @@ def auto_install_mtlflashattn(*, log=print) -> str:
         import importlib
         import site
         importlib.reload(site)
-        import mtlflashattn  # noqa: F401
+        import metal_flash_attn  # noqa: F401
     except Exception as exc:
         return f"install-import-failed:{exc.__class__.__name__}"
 
