@@ -1122,12 +1122,27 @@ def dump_default_english_config():
 
 # dump_default_english_config()
 
+# Gradio 4 rejects any `file=` request outside `allowed_paths` with a 403,
+# even for files this app itself injects via <script src=...>/<link href=...>
+# in ui_gradio_extensions.reload_javascript(). Upstream's allowed_paths only
+# covered the outputs folder, so every custom JS file (script.js,
+# localization.js, zoom.js, edit-attention.js, viewer.js, imageviewer.js,
+# contextMenus.js) and style.css silently 404/403'd after the Gradio 4
+# migration — surfacing as scattered "X is not defined" JS console errors
+# (e.g. refresh_aspect_ratios_label) rather than an obvious asset-loading
+# failure. Allow just the two directories those assets live in.
+_webui_root = os.path.dirname(os.path.abspath(__file__))
+
 shared.gradio_root.launch(
     inbrowser=args_manager.args.in_browser,
     server_name=args_manager.args.listen,
     server_port=args_manager.args.port,
     share=args_manager.args.share,
     auth=check_auth if (args_manager.args.share or args_manager.args.listen) and auth_enabled else None,
-    allowed_paths=[modules.config.path_outputs],
+    allowed_paths=[
+        modules.config.path_outputs,
+        os.path.join(_webui_root, 'javascript'),
+        os.path.join(_webui_root, 'css'),
+    ],
     blocked_paths=[constants.AUTH_FILENAME]
 )
