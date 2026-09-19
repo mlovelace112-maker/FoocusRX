@@ -6,195 +6,169 @@
 #
 # What it does (idempotently, safe to re-run):
 #   1. Verify we are on macOS.
-#   2. Verify Xcode Command Line Tools are installed (needs `git`, `python3`).
-#   3. Choose an install root:
-#        * If this file lives inside a checked-out FoocusRX repo, use that.
-#        * Otherwise clone the repo into $HOME/FoocusRX (or update it).
-#   4. Create a Python venv at <root>/venv (Python 3.10 or newer required).
-#   5. Upgrade pip and install requirements_versions.txt.
-#   6. Launch FoocusRX via scripts/mac_launch.sh, which triggers first-run
-#      auto-install of mtlflashattn on M4+ (see PR #16).
+#   2. Restore a usable PATH (Finder-launched scripts omit Homebrew).
+#   3. Verify Xcode Command Line Tools (`git` is optional; `python3` is not).
+#   4. Use the FoocusRX folder this script lives in. Never clone into
+#      $HOME just because the tree was shipped as a tarball without .git.
+#   5. Create a Python venv at <root>/venv (Python 3.10–3.12).
+#   6. Upgrade pip and install requirements_versions.txt.
+#   7. Write/refresh Launch FoocusRX.command next to the source (and in
+#      the parent bundle folder when present).
+#   8. Launch FoocusRX via scripts/mac_launch.sh.
 #
 # Nothing here needs sudo. The installer writes only inside the chosen
 # install root and the venv it creates. To uninstall, delete that folder.
-#
-# Design notes:
-#   * The file has a .command extension so Finder treats it as executable
-#     and opens a Terminal window on double-click.
-#   * `set -euo pipefail` catches missing prerequisites early.
-#   * We `cd` to the script's own directory to make relative paths sane
-#     regardless of how the user launched it.
-#   * `trap` keeps the Terminal window open on error so the user can read
-#     the diagnostic instead of losing it when the shell exits.
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
 
-# ---- pretty output --------------------------------------------------------
-BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'
-YLW=$'\033[33m'; BLU=$'\033[34m'; RST=$'\033[0m'
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/mac_common.sh"
 
-info()  { printf '%s[FoocusRX]%s %s\n' "$BLU" "$RST" "$*"; }
-ok()    { printf '%s[FoocusRX]%s %s\n' "$GRN" "$RST" "$*"; }
-warn()  { printf '%s[FoocusRX]%s %s\n' "$YLW" "$RST" "$*"; }
-err()   { printf '%s[FoocusRX]%s %s\n' "$RED" "$RST" "$*" >&2; }
-
-# Keep the Terminal window open long enough to read a failure message
-# when the user double-clicked from Finder.
-on_error() {
-    err "Installer failed on line $1. Scroll up for details."
-    err "Press Return to close this window."
-    read -r _ || true
-}
-trap 'on_error $LINENO' ERR
+fx_bootstrap_path
+fx_keep_open_on_error
 
 # ---- 1. OS check ----------------------------------------------------------
 if [[ "$(uname -s)" != "Darwin" ]]; then
-    err "This installer targets macOS only. Detected: $(uname -s)."
-    err "For Linux, use requirements_versions.txt + python -m venv directly."
+    fx_err "This installer targets macOS only. Detected: $(uname -s)."
+    fx_err "For Linux, use requirements_versions.txt + python -m venv directly."
     exit 1
 fi
 
 ARCH="$(uname -m)"
 case "$ARCH" in
-    arm64) info "Detected Apple Silicon (${BOLD}${ARCH}${RST}).";;
-    x86_64) warn "Detected Intel Mac. FoocusRX runs but the Metal Performance"
-            warn "Shaders backend is much slower without Apple Silicon."
+    arm64) fx_info "Detected Apple Silicon (${BOLD}${ARCH}${RST}).";;
+    x86_64) fx_warn "Detected Intel Mac. FoocusRX runs but the Metal Performance"
+            fx_warn "Shaders backend is much slower without Apple Silicon."
             ;;
-    *)     warn "Unfamiliar architecture: $ARCH. Continuing anyway.";;
+    *)     fx_warn "Unfamiliar architecture: $ARCH. Continuing anyway.";;
 esac
 
-# ---- 2. prerequisites -----------------------------------------------------
-# Xcode Command Line Tools give us /usr/bin/git and /usr/bin/python3. We
-# probe for `git` first because `xcode-select -p` returning a path is not
-# enough — the tools directory can exist while the binaries are missing
-# after certain OS upgrades.
-if ! command -v git >/dev/null 2>&1; then
-    err "'git' not found. Install Xcode Command Line Tools:"
-    err "    xcode-select --install"
-    exit 1
-fi
-
-# Pick a Python interpreter in the supported range [3.10, 3.12].
-#
+# ---- 2. Python ------------------------------------------------------------
 # Why capped at 3.12: several of our transitive pins (scipy 1.14.0,
 # numpy 1.26.4, tokenizers 0.19.1, safetensors 0.4.3, pyyaml 6.0.1)
-# do not publish cp313 macOS-arm64 wheels on PyPI. A fresh Mac in 2026
-# ships Python 3.13 as /usr/bin/python3, so pip would try to build
+# do not publish cp313+ macOS-arm64 wheels on PyPI. A fresh Mac in 2026
+# ships Python 3.13+ as /usr/bin/python3, so pip would try to build
 # those from source and blow up on scipy's Meson build. Un-pinning
 # them cascades into numpy 2.x, which breaks the torch 2.5.x we
 # install for MPS. Cap at 3.12 until the pins move to numpy 2.x.
 
-# Helper: is $1 an interpreter in the [3.10, 3.12] range?
-py_in_range() {
-    "$1" - <<'PY' >/dev/null 2>&1
-import sys
-sys.exit(0 if (3, 10) <= sys.version_info[:2] <= (3, 12) else 1)
-PY
-}
-
-PYTHON_BIN=""
-for cand in python3.12 python3.11 python3.10; do
-    if command -v "$cand" >/dev/null 2>&1; then
-        PYTHON_BIN="$(command -v "$cand")"
-        break
-    fi
-done
-
-# Fall back to /usr/bin/python3 (or similar) only if it happens to be
-# in range. This is the common Homebrew / Xcode-CLT case on 3.11-era Macs.
-if [[ -z "$PYTHON_BIN" ]] && command -v python3 >/dev/null 2>&1; then
-    _generic="$(command -v python3)"
-    if py_in_range "$_generic"; then
-        PYTHON_BIN="$_generic"
-    fi
+# git is nice-to-have (optional updates) but not required for a tarball
+# / USB / airgapped install. python3 is required.
+if ! command -v git >/dev/null 2>&1; then
+    fx_warn "'git' not found. Updates via git pull will be skipped."
+    fx_warn "Install Xcode Command Line Tools later with:  xcode-select --install"
 fi
 
-if [[ -z "$PYTHON_BIN" ]]; then
-    err "No supported Python found (need 3.10, 3.11, or 3.12)."
-    err ""
-    err "Reason: several pinned scientific packages don't publish Python"
-    err "3.13 wheels for macOS arm64 yet, so pip would try to build"
-    err "scipy / numpy from source and fail."
-    err ""
+PYTHON_BIN="$(fx_find_python || true)"
+
+if [[ -z "${PYTHON_BIN}" ]]; then
+    fx_err "No supported Python found (need 3.10, 3.11, or 3.12)."
+    fx_err ""
+    fx_err "Reason: several pinned scientific packages don't publish Python"
+    fx_err "3.13+ wheels for macOS arm64 yet, so pip would try to build"
+    fx_err "scipy / numpy from source and fail."
+    fx_err ""
     if command -v brew >/dev/null 2>&1; then
         printf '%s[FoocusRX]%s Install Python 3.12 via Homebrew now? [Y/n] ' "$YLW" "$RST"
         read -r reply || reply="n"
         if [[ "$reply" =~ ^([Yy]|)$ ]]; then
-            info "Running: brew install python@3.12"
+            fx_info "Running: brew install python@3.12"
             brew install python@3.12
-            PYTHON_BIN="$(command -v python3.12 || true)"
-            if [[ -z "$PYTHON_BIN" ]]; then
-                err "brew install completed but python3.12 is still not on PATH."
-                err "Try:  brew link --overwrite python@3.12"
+            fx_bootstrap_path
+            PYTHON_BIN="$(fx_find_python || true)"
+            if [[ -z "${PYTHON_BIN}" ]]; then
+                fx_err "brew install completed but python3.12 is still not on PATH."
+                fx_err "Try:  brew link --overwrite python@3.12"
                 exit 1
             fi
         else
-            err "Aborted. Install manually with:  brew install python@3.12"
+            fx_err "Aborted. Install manually with:  brew install python@3.12"
             exit 1
         fi
     else
-        err "Install one of:"
-        err "    * Homebrew (https://brew.sh) then:  brew install python@3.12"
-        err "    * The python.org installer for Python 3.12"
+        fx_err "Install one of:"
+        fx_err "    * Homebrew (https://brew.sh) then:  brew install python@3.12"
+        fx_err "    * The python.org installer for Python 3.12"
         exit 1
     fi
 fi
 
-# Final sanity check against the selected interpreter — guards against
-# an in-PATH but weird python3.12 (e.g. asdf shim that resolves to 3.13).
-if ! py_in_range "$PYTHON_BIN"; then
-    err "$PYTHON_BIN reports $("$PYTHON_BIN" -V 2>&1) which is outside 3.10-3.12."
+if ! fx_py_in_range "$PYTHON_BIN"; then
+    fx_err "$PYTHON_BIN reports $($PYTHON_BIN -V 2>&1) which is outside 3.10-3.12."
     exit 1
 fi
-ok "Using $PYTHON_BIN ($("$PYTHON_BIN" -V 2>&1))."
+fx_ok "Using $PYTHON_BIN ($($PYTHON_BIN -V 2>&1))."
 
-# ---- 3. locate or clone the repo -----------------------------------------
-# Resolve this script's own directory. `readlink -f` isn't on stock macOS,
-# so use the portable cd/pwd trick.
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-
-# Are we inside a FoocusRX checkout already? The marker is fooocus_version.py
-# one directory above scripts/.
-if [[ -f "$SCRIPT_DIR/../fooocus_version.py" && -d "$SCRIPT_DIR/../.git" ]]; then
+# ---- 3. locate the source tree -------------------------------------------
+# Prefer the checkout this script lives in, even when it was extracted
+# from a release tarball and has no .git directory. The previous check
+# required .git, which made the official macOS zip clone into
+# $HOME/FoocusRX and ignore the bundled source.
+if [[ -f "$SCRIPT_DIR/../fooocus_version.py" ]]; then
     REPO_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
-    info "Running from an existing checkout: $REPO_ROOT"
-    ( cd "$REPO_ROOT" && git pull --ff-only || warn "git pull skipped (dirty tree or offline)." )
+    fx_info "Installing into local tree: $REPO_ROOT"
+    if [[ -d "$REPO_ROOT/.git" ]] && command -v git >/dev/null 2>&1; then
+        ( cd "$REPO_ROOT" && git pull --ff-only ) \
+            || fx_warn "git pull skipped (dirty tree, offline, or no remote)."
+    fi
 else
     REPO_ROOT="${FOOOCUSRX_HOME:-$HOME/FoocusRX}"
-    if [[ -d "$REPO_ROOT/.git" ]]; then
-        info "Updating existing clone at $REPO_ROOT"
-        ( cd "$REPO_ROOT" && git pull --ff-only || warn "git pull skipped (dirty tree or offline)." )
-    else
-        info "Cloning FoocusRX into $REPO_ROOT"
+    if [[ -f "$REPO_ROOT/fooocus_version.py" ]]; then
+        fx_info "Using existing tree at $REPO_ROOT"
+        if [[ -d "$REPO_ROOT/.git" ]] && command -v git >/dev/null 2>&1; then
+            ( cd "$REPO_ROOT" && git pull --ff-only ) \
+                || fx_warn "git pull skipped (dirty tree, offline, or no remote)."
+        fi
+    elif command -v git >/dev/null 2>&1; then
+        fx_info "Cloning FoocusRX into $REPO_ROOT"
         git clone https://github.com/mlovelace112-maker/FoocusRX.git "$REPO_ROOT"
+    else
+        fx_err "No FoocusRX source next to this installer, and git is not available to clone one."
+        fx_err "Extract FoocusRX-*-src.tar.gz next to Install FoocusRX.command and re-run."
+        exit 1
     fi
 fi
 
 cd "$REPO_ROOT"
+fx_warn_if_cloud "$REPO_ROOT"
 
 # ---- 4. venv --------------------------------------------------------------
 VENV_DIR="$REPO_ROOT/venv"
-if [[ ! -d "$VENV_DIR" ]]; then
-    info "Creating virtualenv at $VENV_DIR"
-    "$PYTHON_BIN" -m venv "$VENV_DIR"
+VENV_PY="$VENV_DIR/bin/python"
+
+# Recreate if missing, or if the interpreter is a dangling symlink
+# (folder copied to another Mac / iCloud evicted the binary).
+if fx_venv_present "$REPO_ROOT"; then
+    fx_info "Reusing existing virtualenv at $VENV_DIR"
 else
-    info "Reusing existing virtualenv at $VENV_DIR"
+    if [[ -d "$VENV_DIR" ]]; then
+        fx_warn "Existing virtualenv is broken. Recreating at $VENV_DIR"
+        rm -rf "$VENV_DIR"
+    else
+        fx_info "Creating virtualenv at $VENV_DIR"
+    fi
+    # --copies: real files instead of symlinks, so USB / folder copies
+    # on the same Mac keep a working interpreter stub.
+    "$PYTHON_BIN" -m venv --copies "$VENV_DIR"
 fi
 
-# shellcheck disable=SC1091
-source "$VENV_DIR/bin/activate"
+if [[ ! -x "$VENV_PY" ]]; then
+    fx_err "venv was created but $VENV_PY is not executable."
+    exit 1
+fi
 
 # ---- 5. install requirements ---------------------------------------------
-info "Upgrading pip / wheel / setuptools inside venv"
+fx_info "Upgrading pip / wheel / setuptools inside venv"
 # Pin setuptools < 82. Torch 2.12.x for MPS declares setuptools<82 as an
 # upper bound, and pip's resolver logs the conflict but still installs
 # the newer setuptools, which then breaks torch's own build tools when
 # any package touches torch.utils.cpp_extension. Cap it explicitly.
-python -m pip install --upgrade --quiet pip wheel "setuptools<82"
+"$VENV_PY" -m pip install --upgrade pip wheel "setuptools<82"
 
-info "Installing requirements_versions.txt (this can take several minutes)"
-python -m pip install --quiet -r requirements_versions.txt
+fx_info "Installing requirements_versions.txt (this can take several minutes)"
+"$VENV_PY" -m pip install -r "$REPO_ROOT/requirements_versions.txt"
 
 # On Apple Silicon we do NOT pre-install mtlflashattn here — launch.py
 # handles that on first run via auto_install_mtlflashattn() (PR #16).
@@ -202,10 +176,70 @@ python -m pip install --quiet -r requirements_versions.txt
 # duplicating platform-detection logic. Advanced users who want to force
 # the pre-install can still do: pip install -r requirements_mac.txt.
 
-ok "Dependencies installed."
+fx_ok "Dependencies installed."
 
-# ---- 6. launch ------------------------------------------------------------
-info "Launching FoocusRX. First launch on M4+ will auto-install mtlflashattn."
-info "Press Ctrl-C in this window to quit."
+# ---- 6. one-click launcher ------------------------------------------------
+# Write a double-clickable launcher next to the source tree and, when
+# this tree lives inside a release bundle (parent has the installer or
+# a source tarball), also at the bundle root.
+write_launcher() {
+    local dest="$1"
+    cat > "$dest" <<'LAUNCHER_EOF'
+#!/usr/bin/env bash
+# One-click FoocusRX launcher. Double-click this file.
+# First run installs a local virtualenv; later runs just start the UI.
+set -euo pipefail
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+cd "$DIR"
+
+# If this file sits at the bundle root, the source is ./FoocusRX.
+# If it sits inside the source tree, the source is $DIR itself.
+if [[ -f "$DIR/fooocus_version.py" ]]; then
+    ROOT="$DIR"
+elif [[ -f "$DIR/FoocusRX/fooocus_version.py" ]]; then
+    ROOT="$DIR/FoocusRX"
+else
+    # Bundle root with no extracted FoocusRX/ yet: fall back to the
+    # bundled source tarball, same as the installer does on first run.
+    TARBALL=""
+    shopt -s nullglob
+    tarballs=("$DIR"/FoocusRX-*-src.tar.gz)
+    shopt -u nullglob
+    if [[ ${#tarballs[@]} -gt 0 ]]; then
+        TARBALL="${tarballs[0]}"
+    fi
+    if [[ -z "$TARBALL" ]]; then
+        echo "[FoocusRX] Could not find the FoocusRX folder or a source tarball next to this launcher." >&2
+        echo "Press Return to close." >&2
+        read -r _ || true
+        exit 1
+    fi
+    echo "[FoocusRX] Extracting $TARBALL ..."
+    tar -xzf "$TARBALL" -C "$DIR"
+    ROOT="$DIR/FoocusRX"
+fi
+
+exec bash "$ROOT/scripts/mac_launch.sh" "$@"
+LAUNCHER_EOF
+    chmod +x "$dest"
+    fx_clear_quarantine "$dest"
+}
+
+write_launcher "$REPO_ROOT/Launch FoocusRX.command"
+PARENT="$(dirname "$REPO_ROOT")"
+shopt -s nullglob
+_tarballs=("$PARENT"/FoocusRX-*-src.tar.gz)
+shopt -u nullglob
+if [[ -f "$PARENT/Install FoocusRX.command" || -e "$PARENT/Launch FoocusRX.command" || ${#_tarballs[@]} -gt 0 ]]; then
+    write_launcher "$PARENT/Launch FoocusRX.command"
+fi
+fx_ok "One-click launcher ready: Launch FoocusRX.command"
+
+# ---- 7. launch ------------------------------------------------------------
+fx_info "Launching FoocusRX. First launch on M4+ will auto-install mtlflashattn."
+fx_info "Press Ctrl-C in this window to quit."
 echo
-exec bash scripts/mac_launch.sh "$@"
+# Tell mac_launch.sh not to bounce back into this installer if something
+# is still missing after pip — that would loop forever.
+export FOOOCUS_INSTALLING=1
+exec bash "$REPO_ROOT/scripts/mac_launch.sh" "$@"
