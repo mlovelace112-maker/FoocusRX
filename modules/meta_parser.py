@@ -218,7 +218,11 @@ def get_adm_guidance(key: str, fallback: str | None, source_dict: dict, results:
 def get_freeu(key: str, fallback: str | None, source_dict: dict, results: list, default=None):
     try:
         h = source_dict.get(key, source_dict.get(fallback, default))
-        b1, b2, s1, s2 = eval(h)
+        # ast.literal_eval instead of eval: see get_list above. This field
+        # was missed when the other eval() call sites in this file were
+        # hardened, leaving a remote-code-execution primitive reachable
+        # via a shared image's FreeU metadata.
+        b1, b2, s1, s2 = ast.literal_eval(h)
         results.append(True)
         results.append(float(b1))
         results.append(float(b2))
@@ -470,7 +474,8 @@ class A1111MetadataParser(MetadataParser):
     def to_string(self, metadata: dict) -> str:
         data = {k: v for _, k, v in metadata}
 
-        width, height = eval(data['resolution'])
+        # ast.literal_eval instead of eval: see get_list above.
+        width, height = ast.literal_eval(data['resolution'])
 
         sampler = data['sampler']
         scheduler = data['scheduler']
