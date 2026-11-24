@@ -1,3 +1,9 @@
+import sys
+
+# args_manager parses sys.argv at import time; drop the test runner's own
+# arguments (e.g. `unittest discover tests`) so it doesn't exit with code 2.
+sys.argv = sys.argv[:1]
+
 import numbers
 import os
 import unittest
