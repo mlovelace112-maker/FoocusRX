@@ -1,3 +1,4 @@
+import html
 import os
 import args_manager
 import modules.config
@@ -11,6 +12,45 @@ from modules.meta_parser import MetadataParser, get_exif
 from modules.util import generate_temp_filename
 
 log_cache = {}
+
+
+def build_log_item(only_name: str, metadata, task=None) -> str:
+    """Render one image's entry in log.html.
+
+    Every user-influenced string (prompts, styles, LoRA names, metadata
+    loaded from a dragged-in image) is HTML-escaped. log.html is served
+    from the same origin as the Gradio app, so an unescaped prompt like
+    ``<script>...</script>`` would execute there.
+    """
+    def esc(value) -> str:
+        return html.escape(str(value), quote=True)
+
+    div_name = esc(only_name.replace('.', '_'))
+    name = esc(only_name)
+    item = f"<div id=\"{div_name}\" class=\"image-container\"><hr><table><tr>\n"
+    item += f"<td><a href=\"{name}\" target=\"_blank\"><img src='{name}' onerror=\"this.closest('.image-container').style.display='none';\" loading='lazy'/></a><div>{name}</div></td>"
+    item += "<td><table class='metadata'>"
+    for label, key, value in metadata:
+        value_txt = esc(value).replace('\n', ' </br> ')
+        item += f"<tr><td class='label'>{esc(label)}</td><td class='value'>{value_txt}</td></tr>\n"
+
+    if task is not None and 'positive' in task and 'negative' in task:
+        positive = ', '.join(esc(p) for p in task['positive'])
+        negative = ', '.join(esc(n) for n in task['negative'])
+        full_prompt_details = f"""<details><summary>Positive</summary>{positive}</details>
+        <details><summary>Negative</summary>{negative}</details>"""
+        item += f"<tr><td class='label'>Full raw prompt</td><td class='value'>{full_prompt_details}</td></tr>\n"
+
+    item += "</table>"
+
+    # quote(..., safe='') percent-encodes quotes and angle brackets, so this
+    # is safe inside the single-quoted JS string in the onclick attribute.
+    js_txt = urllib.parse.quote(json.dumps({k: v for _, k, v, in metadata}, indent=0), safe='')
+    item += f"</br><button onclick=\"to_clipboard('{js_txt}')\">Copy to Clipboard</button>"
+
+    item += "</td>"
+    item += "</tr></table></div>\n\n"
+    return item
 
 
 def get_current_html_path(output_format=None):
@@ -104,28 +144,7 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
             else:
                 middle_part = existing_split[0]
 
-    div_name = only_name.replace('.', '_')
-    item = f"<div id=\"{div_name}\" class=\"image-container\"><hr><table><tr>\n"
-    item += f"<td><a href=\"{only_name}\" target=\"_blank\"><img src='{only_name}' onerror=\"this.closest('.image-container').style.display='none';\" loading='lazy'/></a><div>{only_name}</div></td>"
-    item += "<td><table class='metadata'>"
-    for label, key, value in metadata:
-        value_txt = str(value).replace('\n', ' </br> ')
-        item += f"<tr><td class='label'>{label}</td><td class='value'>{value_txt}</td></tr>\n"
-
-    if task is not None and 'positive' in task and 'negative' in task:
-        full_prompt_details = f"""<details><summary>Positive</summary>{', '.join(task['positive'])}</details>
-        <details><summary>Negative</summary>{', '.join(task['negative'])}</details>"""
-        item += f"<tr><td class='label'>Full raw prompt</td><td class='value'>{full_prompt_details}</td></tr>\n"
-
-    item += "</table>"
-
-    js_txt = urllib.parse.quote(json.dumps({k: v for _, k, v, in metadata}, indent=0), safe='')
-    item += f"</br><button onclick=\"to_clipboard('{js_txt}')\">Copy to Clipboard</button>"
-
-    item += "</td>"
-    item += "</tr></table></div>\n\n"
-
-    middle_part = item + middle_part
+    middle_part = build_log_item(only_name, metadata, task) + middle_part
 
     with open(html_name, 'w', encoding='utf-8') as f:
         f.write(begin_part + middle_part + end_part)
