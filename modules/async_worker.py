@@ -1510,7 +1510,13 @@ def worker():
                 build_image_wall(task)
             task.yields.append(['finish', task.results])
             pipeline.prepare_text_encoder(async_call=True)
-        except:
+        except BaseException:
+            # Deliberately broad: this is the only generation thread, so it
+            # must survive anything a task throws, including BaseException
+            # subclasses like EarlyReturnException or a library's sys.exit().
+            # Narrowing to Exception would let those kill the thread without
+            # sending 'finish', leaving the UI stuck until restart.
+            # KeyboardInterrupt only reaches the main thread, never this one.
             traceback.print_exc()
             task.yields.append(['finish', task.results])
         finally:
