@@ -616,6 +616,17 @@ def unet_manual_cast(weight_dtype, inference_device):
     if weight_dtype == torch.float32:
         return None
 
+    # On MPS, compute natively in the hinted dtype (bf16 on M4+, set by
+    # modules.apple_silicon) instead of up-casting every layer's weights to
+    # fp32 on every step. should_use_fp16() is False for bf16 on MPS, so the
+    # fallthrough below returned float32 here: bf16 storage with fp32 math,
+    # which benchmarked ~2.5x slower per SDXL image on an M5 Pro (2.7 s vs
+    # 0.9 s per step) with near-identical output. FOOOCUS_MPS_FP32_COMPUTE=1
+    # restores the old fp32 compute.
+    if is_device_mps(inference_device) and os.environ.get("FOOOCUS_MPS_FP32_COMPUTE", "").strip() != "1":
+        if weight_dtype == _preferred_dtype_from_env(default=None):
+            return None
+
     fp16_supported = ldm_patched.modules.model_management.should_use_fp16(inference_device, prioritize_performance=False)
     if fp16_supported and weight_dtype == torch.float16:
         return None
