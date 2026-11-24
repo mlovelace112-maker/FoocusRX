@@ -184,22 +184,28 @@ class TestA1111ToJson(ConfigPatched):
         self.assertEqual(data['seed'], '1')
         self.assertNotIn('Denoising strength', data)
 
-    @unittest.expectedFailure
     def test_plain_a1111_image_keeps_its_prompt(self):
-        # BUG (modules/util.py extract_styles_from_prompt): with no style match
-        # and no "Raw prompt" field, the extracted prompt is '' so loading an
-        # image from A1111/Civitai clears the prompt box.
+        # Regression: with no style match and no "Raw prompt" field, the
+        # extracted prompt used to be '', clearing the prompt box.
         data = self.parse('a cat, masterpiece\nNegative prompt: blurry\nSteps: 30, Seed: 1, CFG scale: 4')
         self.assertEqual(data['prompt'], 'a cat, masterpiece')
+        self.assertEqual(data['negative_prompt'], 'blurry')
 
-    @unittest.expectedFailure
+    def test_prompt_expansion_repeat_still_detected(self):
+        # The pre-existing path: Fooocus V2 expansion repeats the first word.
+        data = self.parse('a cat, a cat sitting, sunlit\nSteps: 30, Seed: 1, CFG scale: 4')
+        self.assertEqual(data['prompt'], 'a cat')
+
     def test_performance_inferred_from_preset_steps(self):
-        # BUG (modules/meta_parser.py:434): `'performance' in data is None` is a
-        # chained comparison that is always False, so this never runs. Fixing it
-        # also needs line 437's `except ValueError | KeyError:` fixed, since
-        # by_steps raises ValueError for non-preset step counts.
+        # Regression: `'performance' in data is None` was always False.
         data = self.parse('a cat\nSteps: 30, Seed: 1, CFG scale: 4, Raw prompt: a cat')
         self.assertEqual(data.get('performance'), 'Speed')
+        data = self.parse('a cat\nSteps: 4, Seed: 1, CFG scale: 4, Raw prompt: a cat')
+        self.assertEqual(data.get('performance'), 'Lightning')
+
+    def test_explicit_performance_is_not_overridden(self):
+        data = self.parse('a cat\nSteps: 30, Seed: 1, CFG scale: 4, Performance: Quality, Raw prompt: a cat')
+        self.assertEqual(data['performance'], 'Quality')
 
     def test_non_preset_steps_do_not_crash_or_set_performance(self):
         data = self.parse('a cat\nSteps: 37, Seed: 1, CFG scale: 4, Raw prompt: a cat')

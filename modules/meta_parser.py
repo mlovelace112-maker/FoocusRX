@@ -431,11 +431,11 @@ class A1111MetadataParser(MetadataParser):
         data['styles'] = str(found_styles)
 
         # try to load performance based on steps, fallback for direct A1111 imports
-        if 'steps' in data and 'performance' in data is None:
+        if 'steps' in data and 'performance' not in data:
             try:
                 data['performance'] = Performance.by_steps(data['steps']).value
-            except ValueError | KeyError:
-                pass
+            except (ValueError, KeyError):
+                pass  # step count doesn't match a preset; leave performance as is
 
         if 'sampler' in data:
             data['sampler'] = data['sampler'].replace(' Karras', '')
