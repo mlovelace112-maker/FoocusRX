@@ -375,7 +375,9 @@ def patched_cldm_forward(self, x, hint, timesteps, context, y=None, **kwargs):
 
 def patched_unet_forward(self, x, timesteps=None, context=None, y=None, control=None, transformer_options={}, **kwargs):
     self.current_step = 1.0 - timesteps.to(x) / 999.0
-    patch_settings[os.getpid()].global_diffusion_progress = float(self.current_step.detach().cpu().numpy().tolist()[0])
+    # .float() first: NumPy has no bfloat16, so .numpy() on a bf16 tensor
+    # raises when the UNet runs natively in bf16 (M4+ Macs).
+    patch_settings[os.getpid()].global_diffusion_progress = float(self.current_step.detach().float().cpu().numpy().tolist()[0])
 
     y = timed_adm(y, timesteps)
 
