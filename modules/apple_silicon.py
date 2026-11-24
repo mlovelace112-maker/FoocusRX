@@ -23,6 +23,7 @@ without setting anything and Fooocus behaves as before.
 
 from __future__ import annotations
 
+import ast
 import os
 import platform
 import subprocess
@@ -172,15 +173,32 @@ def _marker_dir() -> str:
 _MTLFLASHATTN_MARKER = ".mtlflashattn_install_attempted"
 
 
+def _read_version_string(path: str) -> str:
+    """Return the string assigned to ``version`` in a Python file, without
+    executing it. Only a plain top-level ``version = '...'`` counts; anything
+    else (missing, computed, non-string) yields an empty string.
+    """
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "version"
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            return node.value.value
+    return ""
+
+
 def _current_fooocus_version() -> str:
     """Best-effort read of the FoocusRX version string. Empty on failure."""
     try:
         module_dir = os.path.dirname(os.path.abspath(__file__))
         repo_root = os.path.dirname(module_dir)
-        ns: dict = {}
-        with open(os.path.join(repo_root, "fooocus_version.py")) as fh:
-            exec(fh.read(), ns)  # noqa: S102 - trusted local file
-        return str(ns.get("version", ""))
+        return _read_version_string(os.path.join(repo_root, "fooocus_version.py"))
     except Exception:
         return ""
 
