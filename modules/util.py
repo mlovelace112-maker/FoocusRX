@@ -282,7 +282,7 @@ def extract_original_prompts(style, prompt, negative_prompt):
     removed. Otherwise, returns False with the original prompt and negative prompt.
     """
     if not style.prompt and not style.negative_prompt:
-        return False, prompt, negative_prompt
+        return False, prompt, negative_prompt, ''
 
     match_positive, extracted_positive, real_prompt = unwrap_style_text_from_prompt(
         style.prompt, prompt
@@ -342,6 +342,10 @@ def extract_styles_from_prompt(prompt, negative_prompt):
                 extracted.append(modules.sdxl_styles.fooocus_expansion)
                 if real_prompt.endswith(', '):
                     real_prompt = real_prompt[:-2]
+            else:
+                # No style wrapper and no prompt-expansion repeat: what's left
+                # is the user's own prompt (e.g. an image from A1111/Civitai).
+                real_prompt = prompt
 
     return list(reversed(extracted)), real_prompt, negative_prompt
 
