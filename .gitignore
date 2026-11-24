@@ -59,3 +59,6 @@ user_path_config-deprecated.txt
 
 # Distributable installer bundles produced by scripts/build_mac_installer.sh.
 /dist
+
+# Claude Code local state (worktrees, session settings).
+.claude/
