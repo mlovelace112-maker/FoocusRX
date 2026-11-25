@@ -121,6 +121,15 @@ def build_workloads(meta: dict, styles_table: dict, expansion_style: str = 'Fooo
     return positive, negatives, pool_top_k
 
 
+def unsupported_reason(meta: dict) -> str | None:
+    """Why an image can't be upscaled here, or None. The detailed upscale
+    redraws with an SDXL model; images made with a GGUF model (FLUX.1)
+    would be redrawn by the wrong model."""
+    if str(meta.get('base_model', '')).lower().endswith('.gguf'):
+        return 'made with a GGUF model such as FLUX.1; the detailed upscale uses SDXL'
+    return None
+
+
 def settings_from_metadata(meta: dict, steps_for_performance) -> dict:
     """Generation settings to reuse for the diffusion pass, with the app's
     defaults where the metadata is missing a value."""

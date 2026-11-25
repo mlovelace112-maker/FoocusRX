@@ -56,20 +56,27 @@ def main():
 
     upscaler = None
     index = HistoryIndex()
-    done = failed = 0
+    done = failed = skipped = 0
+    passed_over = set()  # failed or unsupported this session: don't retry every pass
     while True:
-        pending = auto_upscale.find_pending(outputs, since)
+        pending = [p for p in auto_upscale.find_pending(outputs, since) if p not in passed_over]
         if pending:
             records = {item.path: item for item in index.scan(outputs)}
         for path in pending:
             if auto_upscale.app_running():
                 print('FoocusRX was started; stopping so the two don\'t compete for memory.')
                 return 3
+            item = records.get(path)
+            meta = item.metadata if item else {}
+            reason = auto_upscale.unsupported_reason(meta)
+            if reason:
+                skipped += 1
+                passed_over.add(path)
+                print(f'  {os.path.basename(path)}: skipped ({reason}).')
+                continue
             if upscaler is None:
                 print('Loading model (first image only) ...')
                 upscaler = auto_upscale.DetailedUpscaler()
-            item = records.get(path)
-            meta = item.metadata if item else {}
             if not meta:
                 print(f'  {os.path.basename(path)}: no saved settings found; upscaling with default settings.')
             target = auto_upscale.upscaled_path(path)
@@ -79,16 +86,17 @@ def main():
                 done += 1
                 print(f'  {os.path.basename(path)} -> {os.path.basename(target)} '
                       f'({time.perf_counter() - started:.0f} s)')
-            except Exception as exc:  # keep going with the next image
+            except Exception as exc:  # keep going with the next image; don't retry it this session
                 failed += 1
+                passed_over.add(path)
                 print(f'  {os.path.basename(path)}: failed ({exc.__class__.__name__}: {exc})')
         if opts.once:
-            print(f'Done: {done} upscaled, {failed} failed.')
+            print(f'Done: {done} upscaled, {failed} failed, {skipped} skipped.')
             return 0 if failed == 0 else 1
         try:
             time.sleep(opts.interval)
         except KeyboardInterrupt:
-            print(f'\nStopped: {done} upscaled, {failed} failed.')
+            print(f'\nStopped: {done} upscaled, {failed} failed, {skipped} skipped.')
             return 0
 
 

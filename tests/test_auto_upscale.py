@@ -92,6 +92,13 @@ class TestBuildWorkloads(unittest.TestCase):
         self.assertEqual(au.build_workloads({}, STYLES), ([''], [''], 1))
 
 
+class TestUnsupported(unittest.TestCase):
+    def test_flux_images_are_skipped(self):
+        self.assertIsNotNone(au.unsupported_reason({'base_model': 'flux1-schnell-Q4_K_S.gguf'}))
+        self.assertIsNone(au.unsupported_reason({'base_model': 'juggernautXL_v8Rundiffusion.safetensors'}))
+        self.assertIsNone(au.unsupported_reason({}))
+
+
 class TestSettingsFromMetadata(unittest.TestCase):
     def test_parses_log_style_strings(self):
         s = au.settings_from_metadata({
