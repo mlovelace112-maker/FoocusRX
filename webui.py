@@ -15,6 +15,8 @@ from modules import gradio_compat as gc
 import modules.style_sorter as style_sorter
 import modules.meta_parser
 import modules.draft_mode
+import modules.model_profiles
+import modules.util
 import modules.history
 import modules.model_manager
 import threading
@@ -710,6 +712,12 @@ with shared.gradio_root:
                     refiner_model.change(lambda x: gr.update(visible=x != 'None'),
                                          inputs=refiner_model, outputs=refiner_switch, show_progress=False, queue=False)
 
+                    auto_model_settings = gr.Checkbox(label='Auto-apply best settings for the selected model',
+                                                      value=True, container=False)
+                    auto_model_settings_status = gr.Textbox(show_label=False, interactive=False, lines=2,
+                                                            placeholder='Pick a base model to apply its recommended '
+                                                                        'sampler, CFG, steps, resolution and VAE.')
+
                 with gr.Group():
                     lora_ctrls = []
 
@@ -1185,6 +1193,39 @@ with shared.gradio_root:
 
         metadata_import_button.click(trigger_metadata_import, inputs=[metadata_input_image, state_is_generating], outputs=load_data_outputs, queue=False, show_progress=True) \
             .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
+
+        # Best settings for the selected checkpoint. Wired to .input (user picks
+        # only), so loading a preset or an image's settings isn't overridden.
+        profile_components = {
+            'performance': performance_selection, 'guidance_scale': guidance_scale, 'sharpness': sharpness,
+            'sampler_name': sampler_name, 'scheduler_name': scheduler_name, 'overwrite_step': overwrite_step,
+            'aspect_ratio': aspect_ratios_selection, 'vae_name': vae_name, 'clip_skip': clip_skip,
+            'adaptive_cfg': adaptive_cfg,
+        }
+        profile_keys = list(profile_components)
+
+        def base_model_selected(model, enabled, *current_values):
+            unchanged = [gr.update()] * len(profile_keys)
+            if not enabled or not model:
+                return unchanged + [gr.update()]
+            path = modules.util.get_file_from_folder_list(model, modules.config.paths_checkpoints)
+            profile = modules.model_profiles.choose_profile(
+                model, path, modules.model_profiles.load_presets(os.path.abspath('./presets')))
+            if not profile.supported:
+                return unchanged + [f'{model}: {profile.reason}.']
+            new = modules.model_profiles.resolve_for_ui(
+                profile.settings, vae_filenames=modules.config.vae_filenames,
+                aspect_ratio_labels=modules.config.available_aspect_ratios_labels,
+                add_ratio=modules.config.add_ratio, default_vae=flags.default_vae)
+            changes = modules.model_profiles.describe_changes(dict(zip(profile_keys, current_values)), new)
+            status = f'Best settings for {model} ({profile.reason}). '
+            status += ('Changed: ' + '; '.join(changes)) if changes else 'Your settings already match.'
+            return [new.get(key, gr.update()) for key in profile_keys] + [status]
+
+        base_model.input(base_model_selected,
+                         inputs=[base_model, auto_model_settings] + [profile_components[k] for k in profile_keys],
+                         outputs=[profile_components[k] for k in profile_keys] + [auto_model_settings_status],
+                         queue=False, show_progress=False)
 
         def history_load_clicked(item, is_generating):
             if item is None:
