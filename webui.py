@@ -15,6 +15,7 @@ from modules import gradio_compat as gc
 import modules.style_sorter as style_sorter
 import modules.meta_parser
 import modules.prompt_rewriter
+import modules.prompt_library
 import modules.ui_family
 import modules.ui_theme
 import modules.draft_mode
@@ -229,6 +230,8 @@ with shared.gradio_root:
                                                    elem_id='rewrite_prompt_button', min_width=0)
                         rewrite_undo = gr.Button(value='↩ Undo rewrite', size='sm', variant='secondary',
                                                  interactive=False, min_width=0)
+                        save_prompt_button = gr.Button(value='\U0001f4be Save prompt', size='sm', min_width=0,
+                                                       elem_id='save_prompt_button')
                         render_full_button = gr.Button(value='⬆ Render full quality', size='sm',
                                                        variant='secondary', min_width=0,
                                                        elem_id='render_full_button')
@@ -279,6 +282,17 @@ with shared.gradio_root:
                 negative_prompt = gr.Textbox(show_label=False, placeholder='What you do not want to see',
                                              lines=2, elem_id='negative_prompt', container=False,
                                              value=modules.config.default_prompt_negative)
+            with gr.Accordion(label='Compare A/B', open=False, elem_id='compare_accordion'):
+                gr.Markdown('Renders the current prompt and settings once with the base model above (A) and '
+                            'once with model B, using the **same seed**, side by side.', elem_classes='rx-notice')
+                with gr.Row():
+                    compare_model_b = gr.Dropdown(label='Model B', choices=modules.config.model_filenames,
+                                                  value=next((m for m in modules.config.model_filenames
+                                                              if m != modules.config.default_base_model_name),
+                                                             modules.config.default_base_model_name),
+                                                  scale=3, elem_id='compare_model_b')
+                    compare_button = gr.Button(value='Compare', variant='primary', scale=1, min_width=0,
+                                               elem_id='compare_button')
             with gr.Row(elem_classes='advanced_check_row'):
                 input_image_checkbox = gr.Checkbox(label='Input Image', value=modules.config.default_image_prompt_checkbox, container=False, elem_classes='min_check')
                 enhance_checkbox = gr.Checkbox(label='Enhance', value=modules.config.default_enhance_checkbox, container=False, elem_classes='min_check')
@@ -743,6 +757,27 @@ with shared.gradio_root:
                                                        queue=False,
                                                        show_progress=False).then(
                     lambda: None, **gc.js_kwarg('()=>{refresh_style_localization();}'))
+
+            with gr.Tab(label='Prompts', elem_id='prompts_tab') as prompts_tab:
+                with gr.Row():
+                    prompts_query = gr.Textbox(label='Search', placeholder='Name, prompt or tag', scale=3,
+                                               container=False)
+                    prompts_tag = gr.Dropdown(label='Tag', choices=['All tags'], value='All tags', scale=2,
+                                              container=False, min_width=110)
+                prompts_list = gr.Dropdown(label='Saved prompts', choices=[], value=None, interactive=True,
+                                           elem_id='prompts_list')
+                prompts_preview = gr.Textbox(label='Prompt', lines=4, interactive=False, elem_id='prompts_preview')
+                with gr.Row(elem_classes='rx-toolbar'):
+                    prompts_use = gr.Button(value='Use this prompt', size='sm', variant='primary', min_width=0,
+                                            interactive=False, elem_id='prompts_use')
+                    prompts_delete = gr.Button(value='\U0001f5d1 Delete', size='sm', variant='stop', min_width=0,
+                                               interactive=False, elem_id='prompts_delete')
+                gr.Markdown('**Save the current prompt**')
+                with gr.Row():
+                    prompts_name = gr.Textbox(label='Name (optional)', scale=3, elem_id='prompts_name')
+                    prompts_tags = gr.Textbox(label='Tags (comma-separated)', scale=3, elem_id='prompts_tags')
+                prompts_save = gr.Button(value='\U0001f4be Save current prompt', elem_id='prompts_save')
+                prompts_status = gr.Markdown(value='', elem_classes='rx-status', elem_id='prompts_status')
 
             with gr.Tab(label='Models'):
                 with gr.Group():
@@ -1372,6 +1407,116 @@ with shared.gradio_root:
             'image_number': ctrls.index(image_number) - 1,
         })
         task_inputs = ctrls + [draft_mode, draft_request]  # get_task strips the last two
+
+        # --- Prompt library (Prompts tab + toolbar "Save prompt") ---------------
+        def prompt_library():
+            return modules.prompt_library.PromptLibrary(modules.config.path_outputs)
+
+        def prompts_refresh(query, tag, selected=None):
+            lib = prompt_library()
+            entries = lib.search(query, '' if tag in (None, 'All tags') else tag)
+            choices = [(modules.prompt_library.label(e), e['id']) for e in entries]
+            ids = [e['id'] for e in entries]
+            selected = selected if selected in ids else None
+            return [gr.update(choices=choices, value=selected),
+                    gr.update(choices=['All tags'] + lib.all_tags(), value=tag or 'All tags')] + \
+                prompts_pick(selected)
+
+        def prompts_pick(entry_id):
+            entry = prompt_library().get(entry_id) if entry_id else None
+            if entry is None:
+                return ['', gr.update(interactive=False), gr.update(interactive=False)]
+            text = entry['prompt'] + (f"\n\nNegative: {entry['negative']}" if entry.get('negative') else '')
+            return [text, gr.update(interactive=True), gr.update(interactive=True)]
+
+        def prompts_save_clicked(current_prompt, current_negative, name, tags, query, tag):
+            try:
+                entry = prompt_library().save(current_prompt, current_negative, name, tags)
+            except ValueError as exc:
+                return [gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), str(exc), gr.update(),
+                        gr.update()]
+            return prompts_refresh(query, tag, entry['id']) + [f"Saved \u201c{entry['name']}\u201d.", '', '']
+
+        def prompts_use_clicked(entry_id):
+            entry = prompt_library().get(entry_id) if entry_id else None
+            if entry is None:
+                return gr.update(), gr.update()
+            return entry['prompt'], entry.get('negative', '')
+
+        def prompts_delete_clicked(entry_id, query, tag):
+            deleted = prompt_library().delete(entry_id) if entry_id else False
+            return prompts_refresh(query, tag) + ['Deleted.' if deleted else 'Nothing was deleted.']
+
+        prompts_outputs = [prompts_list, prompts_tag, prompts_preview, prompts_use, prompts_delete]
+        for trigger in (prompts_tab.select, prompts_query.submit, prompts_tag.input):
+            trigger(prompts_refresh, inputs=[prompts_query, prompts_tag], outputs=prompts_outputs,
+                    queue=False, show_progress=False)
+        prompts_list.input(prompts_pick, inputs=prompts_list, outputs=prompts_outputs[2:], queue=False,
+                           show_progress=False)
+        prompts_save.click(prompts_save_clicked,
+                           inputs=[prompt, negative_prompt, prompts_name, prompts_tags, prompts_query, prompts_tag],
+                           outputs=prompts_outputs + [prompts_status, prompts_name, prompts_tags],
+                           queue=False, show_progress=False)
+        prompts_use.click(prompts_use_clicked, inputs=prompts_list, outputs=[prompt, negative_prompt],
+                          queue=False, show_progress=False)
+        prompts_delete.click(prompts_delete_clicked, inputs=[prompts_list, prompts_query, prompts_tag],
+                             outputs=prompts_outputs + [prompts_status], queue=False, show_progress=False)
+
+        def save_prompt_toolbar(current_prompt, current_negative):
+            try:
+                entry = prompt_library().save(current_prompt, current_negative)
+            except ValueError as exc:
+                raise gr.Error(str(exc))
+            gr.Info(f"Saved to Prompts: \u201c{entry['name']}\u201d")
+
+        save_prompt_button.click(save_prompt_toolbar, inputs=[prompt, negative_prompt], queue=False,
+                                 show_progress=False)
+
+        # --- Compare A/B: same prompt, settings and seed on two base models ------
+        def compare_clicked(model_b, seed_is_random, *args):
+            import ldm_patched.modules.model_management as model_management
+            args = list(args)
+            with model_management.interrupt_processing_mutex:
+                model_management.interrupt_processing = False
+            modules.prompt_rewriter.release()
+            args[-1], args[-2] = None, False  # no draft request, draft mode off
+            seed = refresh_seed(seed_is_random, args[ctrls.index(image_seed)])
+            args[ctrls.index(image_seed)] = seed
+            args[ctrls.index(image_number)] = 1
+            model_a = args[ctrls.index(base_model)]
+            args_b = list(args)
+            args_b[ctrls.index(base_model)] = model_b
+            hidden = [gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)]
+            yield [gr.update(visible=True, value=modules.html.make_progress_html(1, 'Compare: starting A ...')),
+                   gr.update(visible=True, value=None), gr.update(visible=False), gr.update(visible=False),
+                   gr.update(interactive=False), seed]
+            results = []
+            for name, model, task_args in (('A', model_a, args), ('B', model_b, args_b)):
+                task = get_task(*task_args)
+                worker.async_tasks.append(task)
+                finished = False
+                while not finished:
+                    time.sleep(0.02)
+                    while task.yields:
+                        flag, product = task.yields.pop(0)
+                        if flag == 'preview':
+                            percentage, title, image = product
+                            yield [gr.update(visible=True, value=modules.html.make_progress_html(
+                                       percentage, f'Compare {name} ({model}): {title}')),
+                                   gr.update(visible=True, value=image) if image is not None else gr.update(),
+                                   gr.update(), gr.update(visible=False), gr.update(), gr.update()]
+                        elif flag == 'finish':
+                            images = [p for p in (product or []) if isinstance(p, str)]
+                            results.append((images[-1], f'{name} \u00b7 {model}') if images else None)
+                            finished = True
+            pairs = [r for r in results if r]
+            yield hidden + [gr.update(visible=True, value=pairs or None), gr.update(interactive=True), gr.update()]
+
+        compare_button.click(compare_clicked, inputs=[compare_model_b, seed_random] + task_inputs,
+                             outputs=[progress_html, progress_window, progress_gallery, gallery, compare_button,
+                                      image_seed])
+        base_model.change(lambda: gr.update(choices=modules.config.model_filenames), outputs=compare_model_b,
+                          queue=False, show_progress=False)
 
         def parse_meta(raw_prompt_txt, is_generating):
             loaded_json = None

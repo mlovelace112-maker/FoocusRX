@@ -257,6 +257,88 @@ class TestHistoryBrowse(unittest.TestCase):
         self.assertEqual(exceptions, [])
 
 
+async def set_textbox(page, selector, text):
+    await page.click(f"document.querySelector({json.dumps(selector)})")
+    await page.js(f"(() => {{ const t = document.querySelector({json.dumps(selector)}); t.select(); }})()")
+    await page.send('Input.insertText', text=text)
+    await asyncio.sleep(0.3)
+
+
+async def pick_dropdown(page, elem_id, text_prefix):
+    await page.click(f"document.querySelector('#{elem_id} input')")
+    await asyncio.sleep(0.6)
+    return await page.click(f"[...document.querySelectorAll('ul.options li')].find(li => li.innerText.trim().startsWith({json.dumps(text_prefix)}))")
+
+
+@unittest.skipUnless(URL, 'set FOOOCUS_E2E_URL to run browser tests')
+class TestPromptLibrary(unittest.TestCase):
+    def test_save_find_use_delete(self):
+        marker = 'e2e prompt library check, a teal teapot on a desk'
+
+        async def scenario(page):
+            out = {}
+            await set_textbox(page, '#positive_prompt textarea', marker)
+            await page.show_advanced()
+            await page.open_tab('Prompts')
+            await asyncio.sleep(1.0)
+            await set_textbox(page, '#prompts_name textarea, #prompts_name input', 'E2E teapot')
+            await set_textbox(page, '#prompts_tags textarea, #prompts_tags input', 'e2e, objects')
+            await page.click("document.querySelector('#prompts_save')")
+            await asyncio.sleep(1.2)
+            out['status'] = await page.js("document.querySelector('#prompts_status').innerText.trim()")
+            # Saving selects the new entry in the list.
+            out['picked'] = (await page.js("document.querySelector('#prompts_list input').value")).startswith('E2E teapot')
+            out['preview'] = await page.js("document.querySelector('#prompts_preview textarea').value")
+            await set_textbox(page, '#positive_prompt textarea', 'something else')
+            await page.click("document.querySelector('#prompts_use')")
+            await asyncio.sleep(1.0)
+            out['prompt_after_use'] = await page.js("document.querySelector('#positive_prompt textarea').value")
+            await page.click("document.querySelector('#prompts_delete')")
+            await asyncio.sleep(1.0)
+            out['status_after_delete'] = await page.js("document.querySelector('#prompts_status').innerText.trim()")
+            out['exceptions'] = page.exceptions
+            return out
+
+        out = run(scenario)
+        self.assertIn('Saved', out['status'])
+        self.assertTrue(out['picked'])
+        self.assertTrue(out['preview'].startswith(marker))
+        self.assertEqual(out['prompt_after_use'], marker)
+        self.assertEqual(out['status_after_delete'], 'Deleted.')
+        if OUTPUTS:
+            from modules.prompt_library import PromptLibrary
+            self.assertEqual(PromptLibrary(OUTPUTS).search(marker), [])  # nothing left behind
+        self.assertEqual(out['exceptions'], [])
+
+
+@unittest.skipUnless(URL and os.environ.get('FOOOCUS_E2E_GENERATE') == '1',
+                     'set FOOOCUS_E2E_URL and FOOOCUS_E2E_GENERATE=1 (uses the GPU for minutes)')
+class TestCompare(unittest.TestCase):
+    def test_compare_sdxl_with_flux_same_seed(self):
+        async def scenario(page):
+            await set_textbox(page, '#positive_prompt textarea', 'a lighthouse on a cliff at sunset')
+            await page.click("[...document.querySelectorAll('#compare_accordion button, #compare_accordion .label-wrap')][0]")
+            await asyncio.sleep(0.8)
+            if not await pick_dropdown(page, 'compare_model_b', 'flux1'):
+                return None
+            await page.click("document.querySelector('#compare_button')")
+            await page.wait_for("document.querySelector('#compare_button').disabled", timeout=30)
+            done = await page.wait_for("!document.querySelector('#compare_button').disabled && "
+                                       "document.querySelectorAll('#final_gallery img').length >= 2", timeout=900)
+            captions = await page.js("[...document.querySelectorAll('#final_gallery .caption-label, #final_gallery span')]"
+                                     ".map(e => e.innerText.trim()).filter(t => /^[AB] \\u00b7/.test(t))")
+            await shot(page, 'compare')
+            return done, captions, page.exceptions
+        result = run(scenario)
+        if result is None:
+            self.skipTest('FLUX.1 is not installed')
+        done, captions, exceptions = result
+        self.assertTrue(done)
+        self.assertTrue(any(c.startswith('A \u00b7') for c in captions), captions)
+        self.assertTrue(any(c.startswith('B \u00b7 flux1') for c in captions), captions)
+        self.assertEqual(exceptions, [])
+
+
 @unittest.skipUnless(URL and os.environ.get('FOOOCUS_E2E_GENERATE') == '1',
                      'set FOOOCUS_E2E_URL and FOOOCUS_E2E_GENERATE=1 (uses the GPU for minutes)')
 class TestGenerate(unittest.TestCase):
