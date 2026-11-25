@@ -1180,16 +1180,24 @@ def worker():
                 print('User stopped')
                 break
 
+            # Censor before saving, as the SDXL path does (yield_result's own
+            # censoring would only blank the preview, not the saved file).
+            if modules.config.default_black_out_nsfw or async_task.black_out_nsfw:
+                progressbar(async_task, int(5 + 90 * (i + 1) / total), 'Checking for NSFW content ...')
+                image = default_censor(image)
+
+            # Flux-only keys for steps/sampler: "performance", "steps" and
+            # "sampler" are loaded into the SDXL controls by "Load these
+            # settings", where Flux values would be invalid (or force 4 steps).
             metadata = [
                 ('Prompt', 'prompt', prompt),
                 ('Full prompt', 'full_prompt', text),
                 ('Styles', 'styles', str([s for s in async_task.style_selections if s != 'Fooocus V2'])),
-                ('Performance', 'performance', 'FLUX.1 schnell'),
-                ('Steps', 'steps', 4),
                 ('Resolution', 'resolution', str((image.shape[1], image.shape[0]))),
                 ('Seed', 'seed', str(seed)),
                 ('Base Model', 'base_model', flux_app.FLUX_MODEL_NAME),
-                ('Sampler', 'sampler', 'flow-matching euler'),
+                ('FLUX steps', 'flux_steps', 4),
+                ('FLUX sampler', 'flux_sampler', 'flow-matching euler'),
                 ('Version', 'version', 'FoocusRX FLUX.1 schnell'),
             ]
             path = log(image, metadata, metadata_parser=None, output_format=async_task.output_format)
