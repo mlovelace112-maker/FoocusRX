@@ -160,6 +160,103 @@ class TestHistory(unittest.TestCase):
         self.assertEqual(exceptions, [])
 
 
+def log_entries(day_dir):
+    from modules.history import parse_log_html
+    try:
+        with open(os.path.join(day_dir, 'log.html'), encoding='utf-8') as f:
+            return set(parse_log_html(f.read()))
+    except OSError:
+        return set()
+
+
+@unittest.skipUnless(URL, 'set FOOOCUS_E2E_URL to run browser tests')
+class TestHistoryBrowse(unittest.TestCase):
+    COUNT = "document.querySelector('#history_count').innerText.trim()"
+
+    def test_thumbnails_paging_favourite_rating_and_filters(self):
+        async def scenario(page):
+            out = {}
+            await open_history(page)
+            out['src'] = await page.js(f"{THUMBS}[0].querySelector('img').getAttribute('src')")
+            out['count'] = await page.js(self.COUNT)
+            out['thumbs'] = (await page.js(HISTORY_STATE))['thumbs']
+            if await page.js("document.querySelector('#history_more').offsetParent !== null"):
+                await page.click("document.querySelector('#history_more')")
+                await asyncio.sleep(1.5)
+                out['thumbs_more'] = (await page.js(HISTORY_STATE))['thumbs']
+            await page.click(f'{THUMBS}[0]')
+            await page.wait_for("!document.querySelector('#history_fav').disabled", timeout=10)
+            await asyncio.sleep(0.5)
+            if (await page.js("document.querySelector('#history_fav').innerText.trim()")).startswith('♥'):
+                await page.click("document.querySelector('#history_fav')")  # left over from an earlier run
+                await asyncio.sleep(0.8)
+            await page.click("document.querySelector('#history_fav')")
+            await asyncio.sleep(0.8)
+            out['fav_label'] = await page.js("document.querySelector('#history_fav').innerText.trim()")
+            await page.click_label('★★★', "document.querySelector('#history_stars')")
+            await asyncio.sleep(0.8)
+            await page.click_label('♥ Favourites only')
+            await asyncio.sleep(1.5)
+            out['fav_only'] = (await page.js(HISTORY_STATE))['thumbs']
+            out['fav_caption'] = await page.js(f"{THUMBS}[0] && {THUMBS}[0].innerText")
+            await page.click_label('♥ Favourites only')  # back to everything
+            await asyncio.sleep(1.5)
+            # Leave no rating behind: clear it on the same image.
+            await page.click(f'{THUMBS}[0]')
+            await page.wait_for("!document.querySelector('#history_fav').disabled", timeout=10)
+            await asyncio.sleep(0.5)
+            await page.click("document.querySelector('#history_fav')")
+            await asyncio.sleep(0.6)
+            await page.click_label('☆', "document.querySelector('#history_stars')")
+            await asyncio.sleep(0.6)
+            out['fav_label_after'] = await page.js("document.querySelector('#history_fav').innerText.trim()")
+            out['fav_enabled_after'] = await page.js("!document.querySelector('#history_fav').disabled")
+            out['exceptions'] = page.exceptions
+            await shot(page, 'history_browse')
+            return out
+        out = run(scenario)
+        # Gradio serves a cached copy, so check the thumbnail's file name (<image>.<ext>.jpg).
+        self.assertRegex(out['src'], r'\.(png|jpe?g|webp)\.jpg$')
+        self.assertRegex(out['count'], r'Showing \d+ of \d+')
+        if 'thumbs_more' in out:
+            self.assertGreater(out['thumbs_more'], out['thumbs'])
+        self.assertEqual(out['fav_label'], '♥ Favourite')
+        self.assertEqual(out['fav_only'], 1)
+        self.assertIn('♥', out['fav_caption'])
+        self.assertIn('★★★', out['fav_caption'])
+        self.assertEqual(out['fav_label_after'], '♡ Favourite')
+        self.assertTrue(out['fav_enabled_after'])  # re-selecting the same image after a refresh works
+        if OUTPUTS:
+            from modules.history import RatingsStore
+            self.assertEqual(RatingsStore(OUTPUTS).load(), {})  # the test leaves no rating behind
+        self.assertEqual(out['exceptions'], [])
+
+    @unittest.skipUnless(OUTPUTS and os.environ.get('FOOOCUS_E2E_ALLOW_DELETE') == '1',
+                         'set FOOOCUS_E2E_OUTPUTS and FOOOCUS_E2E_ALLOW_DELETE=1 (scratch outputs only)')
+    def test_delete_tidies_log_and_undo_restores_it(self):
+        async def scenario(page):
+            await open_history(page)
+            await page.click(f'{THUMBS}[0]')
+            await asyncio.sleep(0.8)
+            details = await page.js("[...document.querySelectorAll('#rx_panel textarea')].map(t => t.value).find(v => v.startsWith('File: '))")
+            name = details.split('\n')[0][len('File: '):]
+            day = details.split('\n')[1][len('Date: '):]
+            day_dir = os.path.join(OUTPUTS, day)
+            before = log_entries(day_dir)
+            await page.click("document.querySelector('#history_delete')")
+            await asyncio.sleep(1.5)
+            after_delete = log_entries(day_dir)
+            await page.click("document.querySelector('#history_undo')")
+            await asyncio.sleep(1.5)
+            return name, before, after_delete, log_entries(day_dir), page.exceptions
+        name, before, after_delete, after_undo, exceptions = run(scenario)
+        if name not in before:
+            self.skipTest('the newest image has no log.html entry')
+        self.assertNotIn(name, after_delete)
+        self.assertEqual(after_undo, before)
+        self.assertEqual(exceptions, [])
+
+
 @unittest.skipUnless(URL and os.environ.get('FOOOCUS_E2E_GENERATE') == '1',
                      'set FOOOCUS_E2E_URL and FOOOCUS_E2E_GENERATE=1 (uses the GPU for minutes)')
 class TestGenerate(unittest.TestCase):

@@ -1,5 +1,7 @@
 import html
 import os
+import re
+import threading
 import args_manager
 import modules.config
 import json
@@ -12,6 +14,12 @@ from modules.meta_parser import MetadataParser, get_exif
 from modules.util import generate_temp_filename
 
 log_cache = {}
+# Serialises log.html rewrites: generation (log) and History deletes
+# (remove_log_entries / restore_log_entries) both rewrite the whole file.
+log_lock = threading.RLock()
+LOG_SPLIT = '<!--fooocus-log-split-->'
+_ITEM_START_RE = re.compile(r'(?=<div id="[^"]+" class="image-container">)')
+_ITEM_ID_RE = re.compile(r'<div id="([^"]+)" class="image-container">')
 
 
 def build_log_item(only_name: str, metadata, task=None) -> str:
@@ -134,23 +142,95 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
     begin_part = f"<!DOCTYPE html><html><head><title>Fooocus Log {date_string}</title>{css_styles}</head><body>{js}<p>Fooocus Log {date_string} (private)</p>\n<p>Metadata is embedded if enabled in the config or developer debug mode. You can find the information for each image in line Metadata Scheme.</p><!--fooocus-log-split-->\n\n"
     end_part = f'\n<!--fooocus-log-split--></body></html>'
 
-    middle_part = log_cache.get(html_name, "")
+    with log_lock:
+        middle_part = log_cache.get(html_name, "")
 
-    if middle_part == "":
-        if os.path.exists(html_name):
-            existing_split = open(html_name, 'r', encoding='utf-8').read().split('<!--fooocus-log-split-->')
-            if len(existing_split) == 3:
-                middle_part = existing_split[1]
-            else:
-                middle_part = existing_split[0]
+        if middle_part == "":
+            if os.path.exists(html_name):
+                existing_split = open(html_name, 'r', encoding='utf-8').read().split('<!--fooocus-log-split-->')
+                if len(existing_split) == 3:
+                    middle_part = existing_split[1]
+                else:
+                    middle_part = existing_split[0]
 
-    middle_part = build_log_item(only_name, metadata, task) + middle_part
+        middle_part = build_log_item(only_name, metadata, task) + middle_part
 
-    with open(html_name, 'w', encoding='utf-8') as f:
-        f.write(begin_part + middle_part + end_part)
+        with open(html_name, 'w', encoding='utf-8') as f:
+            f.write(begin_part + middle_part + end_part)
+
+        log_cache[html_name] = middle_part
 
     print(f'Image generated with private log at: {html_name}')
 
-    log_cache[html_name] = middle_part
-
     return local_temp_filename
+
+
+def _split_items(middle: str) -> list:
+    return [chunk for chunk in _ITEM_START_RE.split(middle) if chunk.strip()]
+
+
+def _item_id(block: str) -> str:
+    match = _ITEM_ID_RE.match(block)
+    return html.unescape(match.group(1)) if match else ''
+
+
+def _rewrite_middle(html_name: str, edit) -> object:
+    """Apply ``edit(items) -> (new_items, result)`` to a log.html's entries,
+    atomically, keeping the page header/footer. Returns ``result`` (None when
+    the file is missing or not in the expected format)."""
+    with log_lock:
+        try:
+            with open(html_name, encoding='utf-8') as f:
+                parts = f.read().split(LOG_SPLIT)
+        except OSError:
+            return None
+        if len(parts) != 3:
+            return None
+        middle = log_cache.get(html_name) or parts[1]
+        items, result = edit(_split_items(middle))
+        new_middle = '\n\n' + ''.join(items) if items else '\n\n'
+        tmp = html_name + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(parts[0] + LOG_SPLIT + new_middle + LOG_SPLIT + parts[2])
+        os.replace(tmp, html_name)
+        if html_name in log_cache:
+            log_cache[html_name] = new_middle
+        return result
+
+
+def remove_log_entries(html_name: str, filenames) -> dict:
+    """Drop the entries for ``filenames`` from a day's log.html.
+    Returns {filename: removed_html_block} for restore_log_entries."""
+    wanted = {name.replace('.', '_'): name for name in filenames}
+
+    def edit(items):
+        kept, removed = [], {}
+        for block in items:
+            name = wanted.get(_item_id(block))
+            if name is not None and name not in removed:
+                removed[name] = block
+            else:
+                kept.append(block)
+        return kept, removed
+
+    return _rewrite_middle(html_name, edit) or {}
+
+
+def restore_log_entries(html_name: str, blocks) -> int:
+    """Put back blocks from remove_log_entries, newest first by filename
+    (names start with the generation timestamp)."""
+    blocks = [b for b in blocks or [] if b]
+
+    def edit(items):
+        present = {_item_id(b) for b in items}
+        added = 0
+        for block in blocks:
+            if _item_id(block) in present:
+                continue
+            index = next((i for i, other in enumerate(items) if _item_id(other) < _item_id(block)), len(items))
+            items.insert(index, block)
+            present.add(_item_id(block))
+            added += 1
+        return items, added
+
+    return _rewrite_middle(html_name, edit) or 0

@@ -31,6 +31,7 @@ from extras.inpaint_mask import SAMOptions
 
 from modules.sdxl_styles import legal_style_names
 from modules.private_logger import get_current_html_path
+import modules.private_logger
 from modules.ui_gradio_extensions import reload_javascript
 from modules.auth import auth_enabled, check_auth
 from modules.util import is_json
@@ -42,7 +43,13 @@ def refiner_choices():
     """Refiners must be SDXL/SD1.5 checkpoints; FLUX.1 can't refine."""
     return ['None'] + [m for m in modules.config.model_filenames if not modules.flux.app.is_flux(m)]
 
-HISTORY_LIMIT = 200  # newest matches shown in the History tab
+HISTORY_PAGE = 48  # History tab: images per page ("Load more" adds another page)
+HISTORY_STAR_CHOICES = ['Any rating', '\u2605 1+', '\u2605 2+', '\u2605 3+', '\u2605 4+', '\u2605 5']
+HISTORY_RATING_CHOICES = ['\u2606', '\u2605', '\u2605\u2605', '\u2605\u2605\u2605', '\u2605\u2605\u2605\u2605', '\u2605\u2605\u2605\u2605\u2605']
+
+
+def history_ratings():
+    return modules.history.RatingsStore(modules.config.path_outputs)
 
 
 # Positions of the inputs draft mode adjusts, within get_task's args after
@@ -1038,10 +1045,22 @@ with shared.gradio_root:
                                                scale=4, container=False)
                     history_refresh = gr.Button(value='\U0001f504 Refresh', variant='secondary',
                                                 elem_classes='refresh_button', scale=1)
+                with gr.Row(elem_id='history_filters'):
+                    history_filter_model = gr.Dropdown(label='Model', choices=[modules.history.ALL_MODELS],
+                                                       value=modules.history.ALL_MODELS, scale=3, min_width=120)
+                    history_filter_day = gr.Dropdown(label='Day', choices=[modules.history.ALL_DAYS],
+                                                     value=modules.history.ALL_DAYS, scale=2, min_width=110)
+                    history_filter_stars = gr.Dropdown(label='Rating', choices=HISTORY_STAR_CHOICES,
+                                                       value=HISTORY_STAR_CHOICES[0], scale=2, min_width=90)
+                history_filter_fav = gr.Checkbox(label='\u2665 Favourites only', value=False, container=False)
                 # Sized in css/style.css (#history_gallery .grid-wrap) so the grid
                 # scrolls; Gradio's height= clipped it instead.
                 history_gallery = gr.Gallery(show_label=False, columns=4, object_fit='contain',
                                              allow_preview=False, elem_id='history_gallery')
+                with gr.Row(elem_classes='rx-toolbar'):
+                    history_count = gr.Markdown(value='', elem_classes='rx-status', elem_id='history_count')
+                    history_more = gr.Button(value='Load more', size='sm', min_width=0, visible=False,
+                                             elem_id='history_more')
                 history_select_mode = gr.Checkbox(label='Select multiple', value=False, container=False,
                                                   info='Click images to add them to the selection.')
                 with gr.Row(elem_classes='rx-toolbar'):
@@ -1055,13 +1074,20 @@ with shared.gradio_root:
                                                interactive=False, min_width=0, elem_id='history_delete')
                     history_undo = gr.Button(value='\u21a9 Undo delete', size='sm', interactive=False,
                                              min_width=0, elem_id='history_undo')
-                history_status = gr.Markdown(value='', elem_classes='rx-status')
+                history_status = gr.Markdown(value='', elem_classes='rx-status', elem_id='history_status')
+                with gr.Row(elem_classes='rx-toolbar', elem_id='history_rating_row'):
+                    history_fav = gr.Button(value='\u2661 Favourite', size='sm', min_width=0, interactive=False,
+                                            elem_id='history_fav')
+                    history_stars = gr.Radio(label='Rating', choices=HISTORY_RATING_CHOICES,
+                                             value=HISTORY_RATING_CHOICES[0], interactive=False,
+                                             elem_id='history_stars', container=False)
                 history_details = gr.Textbox(label='Selected image', lines=6, interactive=False)
                 history_load = gr.Button(value='Load these settings', interactive=False)
                 history_items = gr.State([])
                 history_selected = gr.State(None)
                 history_marked = gr.State([])       # paths picked in "Select multiple" mode
-                history_last_moves = gr.State([])   # [(original, trashed)] for Undo
+                history_last_moves = gr.State([])   # [(original, trashed, log block)] for Undo
+                history_limit = gr.State(HISTORY_PAGE)
 
                 def history_selection_view(marked, item):
                     if marked:
@@ -1074,22 +1100,45 @@ with shared.gradio_root:
                                             visible=bool(marked))
                     return [marked, marked_view, delete]
 
-                def history_refresh_clicked(query, marked=None):
-                    items = modules.history.search(history_index.scan(modules.config.path_outputs), query)
-                    items = items[:HISTORY_LIMIT]
-                    gallery = [(item.path, f"{item.date} · seed {item.metadata.get('seed', '?')}") for item in items]
+                def history_rating_view(item):
+                    if item is None:
+                        return [gr.update(value='\u2661 Favourite', interactive=False),
+                                gr.update(value=HISTORY_RATING_CHOICES[0], interactive=False)]
+                    rating = history_ratings().get(item.path)
+                    return [gr.update(value='\u2665 Favourite' if rating['favourite'] else '\u2661 Favourite',
+                                      interactive=True),
+                            gr.update(value=HISTORY_RATING_CHOICES[rating['stars']], interactive=True)]
+
+                def history_refresh_clicked(query, marked, model, day, stars, favourites_only, limit):
+                    store = history_ratings()
+                    everything = history_index.scan(modules.config.path_outputs)
+                    model_choices, day_choices = modules.history.filter_choices(everything)
+                    model = model if model in model_choices else modules.history.ALL_MODELS
+                    day = day if day in day_choices else modules.history.ALL_DAYS
+                    matches = modules.history.filter_items(
+                        modules.history.search(everything, query), model, day, favourites_only,
+                        HISTORY_STAR_CHOICES.index(stars) if stars in HISTORY_STAR_CHOICES else 0, store.load())
+                    ratings = store.load()
+                    items = matches[:limit]
+                    gallery = [(modules.history.ensure_thumbnail(item.path, modules.config.path_outputs),
+                                modules.history.caption(item, ratings.get(modules.history.RatingsStore.key(item.path))))
+                               for item in items]
                     marked = [path for path in (marked or []) if os.path.isfile(path)]
+                    count = f'Showing {len(items)} of {len(matches)}' if matches else 'No images match.'
                     return [gallery, items, None, '', gr.update(interactive=False)] + \
-                        history_selection_view(marked, None)
+                        history_selection_view(marked, None) + history_rating_view(None) + \
+                        [gr.update(choices=model_choices, value=model), gr.update(choices=day_choices, value=day),
+                         count, gr.update(visible=len(matches) > len(items))]
 
                 def history_select(items, select_mode, marked, evt: gr.SelectData):
                     if not items or evt.index is None or evt.index >= len(items):
-                        return [None, '', gr.update(interactive=False)] + history_selection_view(marked, None)
+                        return [None, '', gr.update(interactive=False)] + history_selection_view(marked, None) + \
+                            history_rating_view(None)
                     item = items[evt.index]
                     if select_mode:
                         marked = [p for p in marked if p != item.path] if item.path in marked else marked + [item.path]
                     return [item, modules.history.describe(item), gr.update(interactive=item.source != 'none')] + \
-                        history_selection_view(marked, item)
+                        history_selection_view(marked, item) + history_rating_view(item)
 
                 def history_unmark(marked, item, evt: gr.SelectData):
                     if evt.index is not None and 0 <= evt.index < len(marked):
@@ -1100,32 +1149,67 @@ with shared.gradio_root:
                     marked = list(dict.fromkeys(list(marked) + [i.path for i in items]))
                     return history_selection_view(marked, item)
 
-                def history_delete_clicked(marked, item, query):
+                def history_delete_clicked(marked, item, *refresh_args):
                     paths = list(marked) if marked else ([item.path] if item is not None else [])
-                    moves, skipped = modules.history.delete_items(paths, modules.config.path_outputs)
+                    moves, skipped = modules.history.delete_items(
+                        paths, modules.config.path_outputs,
+                        log_remover=modules.private_logger.remove_log_entries)
                     where = modules.history.default_trash_dir(modules.config.path_outputs)
                     where = 'the Trash' if where == os.path.expanduser('~/.Trash') else where
                     status = f'Moved {len(moves)} image(s) to {where}.' if moves else 'Nothing was deleted.'
                     if skipped:
                         status += f' {len(skipped)} could not be moved.'
-                    return history_refresh_clicked(query, []) + \
+                    query, _marked, *filters = refresh_args
+                    return history_refresh_clicked(query, [], *filters) + \
                         [status, gr.update(interactive=bool(moves)), moves]
 
-                def history_undo_clicked(moves, query, marked):
-                    restored = modules.history.restore_items(moves)
-                    return history_refresh_clicked(query, marked) + \
+                def history_undo_clicked(moves, *refresh_args):
+                    restored = modules.history.restore_items(
+                        moves, log_restorer=modules.private_logger.restore_log_entries)
+                    return history_refresh_clicked(*refresh_args) + \
                         [f'Restored {restored} image(s).', gr.update(interactive=False), []]
 
+                def history_fav_clicked(item, *refresh_args):
+                    if item is not None:
+                        current = history_ratings().get(item.path)['favourite']
+                        history_ratings().update(item.path, favourite=not current)
+                    return history_rating_view(item)
+
+                def history_stars_changed(item, stars):
+                    if item is not None and stars in HISTORY_RATING_CHOICES:
+                        history_ratings().update(item.path, stars=HISTORY_RATING_CHOICES.index(stars))
+                    return history_rating_view(item)
+
+                history_filter_inputs = [history_filter_model, history_filter_day, history_filter_stars,
+                                         history_filter_fav, history_limit]
+                history_refresh_inputs = [history_query, history_marked] + history_filter_inputs
                 history_selection_outputs = [history_marked, history_marked_gallery, history_delete]
+                history_rating_outputs = [history_fav, history_stars]
                 history_refresh_outputs = [history_gallery, history_items, history_selected, history_details,
-                                           history_load] + history_selection_outputs
+                                           history_load] + history_selection_outputs + history_rating_outputs + \
+                                          [history_filter_model, history_filter_day, history_count, history_more]
                 history_undo_outputs = [history_status, history_undo, history_last_moves]
-                for trigger in (history_refresh.click, history_query.submit, history_tab.select):
-                    trigger(history_refresh_clicked, inputs=[history_query, history_marked],
-                            outputs=history_refresh_outputs, queue=False, show_progress=False)
+
+                # Emptying the gallery first makes Gradio forget its selected
+                # thumbnail; otherwise clicking that position again after a
+                # refresh fires no select event (Gallery.svelte keeps the index).
+                def history_reset_page():
+                    return HISTORY_PAGE, None
+
+                for trigger in (history_refresh.click, history_query.submit, history_tab.select,
+                                history_filter_model.input, history_filter_day.input, history_filter_stars.input,
+                                history_filter_fav.input):
+                    trigger(history_reset_page, outputs=[history_limit, history_gallery], queue=False,
+                            show_progress=False) \
+                        .then(history_refresh_clicked, inputs=history_refresh_inputs,
+                              outputs=history_refresh_outputs, queue=False, show_progress=False)
+                history_more.click(lambda limit: limit + HISTORY_PAGE, inputs=history_limit, outputs=history_limit,
+                                   queue=False, show_progress=False) \
+                    .then(history_refresh_clicked, inputs=history_refresh_inputs, outputs=history_refresh_outputs,
+                          queue=False, show_progress=False)
                 history_gallery.select(history_select, inputs=[history_items, history_select_mode, history_marked],
                                        outputs=[history_selected, history_details, history_load] +
-                                               history_selection_outputs,
+                                               history_selection_outputs + history_rating_outputs,
                                        queue=False, show_progress=False)
                 history_marked_gallery.select(history_unmark, inputs=[history_marked, history_selected],
                                               outputs=history_selection_outputs, queue=False, show_progress=False)
@@ -1134,13 +1218,19 @@ with shared.gradio_root:
                                          outputs=history_selection_outputs, queue=False, show_progress=False)
                 history_clear.click(lambda item: history_selection_view([], item), inputs=history_selected,
                                     outputs=history_selection_outputs, queue=False, show_progress=False)
-                history_delete.click(history_delete_clicked,
-                                     inputs=[history_marked, history_selected, history_query],
+                history_delete.click(lambda: None, outputs=history_gallery, queue=False, show_progress=False) \
+                    .then(history_delete_clicked,
+                                     inputs=[history_marked, history_selected] + history_refresh_inputs,
                                      outputs=history_refresh_outputs + history_undo_outputs,
                                      queue=False, show_progress=False)
-                history_undo.click(history_undo_clicked, inputs=[history_last_moves, history_query, history_marked],
+                history_undo.click(lambda: None, outputs=history_gallery, queue=False, show_progress=False) \
+                    .then(history_undo_clicked, inputs=[history_last_moves] + history_refresh_inputs,
                                    outputs=history_refresh_outputs + history_undo_outputs,
                                    queue=False, show_progress=False)
+                history_fav.click(history_fav_clicked, inputs=history_selected, outputs=history_rating_outputs,
+                                  queue=False, show_progress=False)
+                history_stars.input(history_stars_changed, inputs=[history_selected, history_stars],
+                                    outputs=history_rating_outputs, queue=False, show_progress=False)
 
         state_is_generating = gr.State(False)
 
