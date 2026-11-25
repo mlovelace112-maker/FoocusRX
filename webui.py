@@ -14,6 +14,9 @@ import modules.gradio_hijack as grh
 from modules import gradio_compat as gc
 import modules.style_sorter as style_sorter
 import modules.meta_parser
+import modules.draft_mode
+import modules.model_profiles
+import modules.util
 import modules.flux.app
 import modules.history
 import modules.model_manager
@@ -39,11 +42,29 @@ def refiner_choices():
 HISTORY_LIMIT = 200  # newest matches shown in the History tab
 
 
+# Positions of the inputs draft mode adjusts, within get_task's args after
+# currentTask is removed. Filled in once ctrls is built (see below).
+DRAFT_ARG_INDEX = {}
+
+
 def get_task(*args):
     args = list(args)
+    request = args.pop()        # draft_request: {'mode': 'full', 'seed': n} or None
+    draft_enabled = args.pop()  # Draft mode checkbox
     args.pop(0)
 
-    return worker.AsyncTask(args=args)
+    if request:
+        mode, seed = request['mode'], request.get('seed')
+    else:
+        mode, seed = ('draft' if draft_enabled else None), None
+    named = {name: args[i] for name, i in DRAFT_ARG_INDEX.items()}
+    is_draft = modules.draft_mode.apply_draft(named, mode, seed)
+    for name, i in DRAFT_ARG_INDEX.items():
+        args[i] = named[name]
+
+    task = worker.AsyncTask(args=args)
+    task.draft_mode = is_draft
+    return task
 
 def generate_clicked(task: worker.AsyncTask):
     import ldm_patched.modules.model_management as model_management
@@ -601,6 +622,14 @@ with shared.gradio_root:
                 prompt_queue = gr.Checkbox(label='Prompt queue (one prompt per line)', value=False,
                                            info='Each non-empty prompt line becomes its own generation, '
                                                 'with the settings and Image Number above.')
+                draft_mode = gr.Checkbox(label='Draft mode (fast previews)', value=False,
+                                         info=f'{modules.draft_mode.DRAFT_STEPS}-step previews with the DPM++ 2M '
+                                              'sampler, about 2.5x faster. Click a draft in the gallery, then '
+                                              '"Render full quality". Not used with Extreme Speed, Lightning '
+                                              'or Hyper-SD.')
+                render_full_button = gr.Button(value='Render full quality', variant='secondary')
+                draft_request = gr.State(None)       # {'mode': 'full', 'seed': int} for one run
+                gallery_selected_index = gr.State(None)
 
                 output_format = gr.Radio(label='Output Format',
                                          choices=flags.OutputFormat.list(),
@@ -695,6 +724,12 @@ with shared.gradio_root:
 
                     refiner_model.change(lambda x: gr.update(visible=x != 'None'),
                                          inputs=refiner_model, outputs=refiner_switch, show_progress=False, queue=False)
+
+                    auto_model_settings = gr.Checkbox(label='Auto-apply best settings for the selected model',
+                                                      value=True, container=False)
+                    auto_model_settings_status = gr.Textbox(show_label=False, interactive=False, lines=2,
+                                                            placeholder='Pick a base model to apply its recommended '
+                                                                        'sampler, CFG, steps, resolution and VAE.')
 
                 with gr.Group():
                     lora_ctrls = []
@@ -1130,6 +1165,17 @@ with shared.gradio_root:
         ctrls += enhance_ctrls
         ctrls += [prompt_queue]  # must stay last: AsyncTask reads it after the enhance controls
 
+        # get_task drops currentTask (ctrls[0]), hence the -1.
+        DRAFT_ARG_INDEX.update({
+            'performance': ctrls.index(performance_selection) - 1,
+            'overwrite_step': ctrls.index(overwrite_step) - 1,
+            'sampler_name': ctrls.index(sampler_name) - 1,
+            'scheduler_name': ctrls.index(scheduler_name) - 1,
+            'image_seed': ctrls.index(image_seed) - 1,
+            'image_number': ctrls.index(image_number) - 1,
+        })
+        task_inputs = ctrls + [draft_mode, draft_request]  # get_task strips the last two
+
         def parse_meta(raw_prompt_txt, is_generating):
             loaded_json = None
             if is_json(raw_prompt_txt):
@@ -1161,6 +1207,39 @@ with shared.gradio_root:
         metadata_import_button.click(trigger_metadata_import, inputs=[metadata_input_image, state_is_generating], outputs=load_data_outputs, queue=False, show_progress=True) \
             .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
 
+        # Best settings for the selected checkpoint. Wired to .input (user picks
+        # only), so loading a preset or an image's settings isn't overridden.
+        profile_components = {
+            'performance': performance_selection, 'guidance_scale': guidance_scale, 'sharpness': sharpness,
+            'sampler_name': sampler_name, 'scheduler_name': scheduler_name, 'overwrite_step': overwrite_step,
+            'aspect_ratio': aspect_ratios_selection, 'vae_name': vae_name, 'clip_skip': clip_skip,
+            'adaptive_cfg': adaptive_cfg,
+        }
+        profile_keys = list(profile_components)
+
+        def base_model_selected(model, enabled, *current_values):
+            unchanged = [gr.update()] * len(profile_keys)
+            if not enabled or not model:
+                return unchanged + [gr.update()]
+            path = modules.util.get_file_from_folder_list(model, modules.config.paths_checkpoints)
+            profile = modules.model_profiles.choose_profile(
+                model, path, modules.model_profiles.load_presets(os.path.abspath('./presets')))
+            if not profile.supported:
+                return unchanged + [f'{model}: {profile.reason}.']
+            new = modules.model_profiles.resolve_for_ui(
+                profile.settings, vae_filenames=modules.config.vae_filenames,
+                aspect_ratio_labels=modules.config.available_aspect_ratios_labels,
+                add_ratio=modules.config.add_ratio, default_vae=flags.default_vae)
+            changes = modules.model_profiles.describe_changes(dict(zip(profile_keys, current_values)), new)
+            status = f'Best settings for {model} ({profile.reason}). '
+            status += ('Changed: ' + '; '.join(changes)) if changes else 'Your settings already match.'
+            return [new.get(key, gr.update()) for key in profile_keys] + [status]
+
+        base_model.input(base_model_selected,
+                         inputs=[base_model, auto_model_settings] + [profile_components[k] for k in profile_keys],
+                         outputs=[profile_components[k] for k in profile_keys] + [auto_model_settings_status],
+                         queue=False, show_progress=False)
+
         def history_load_clicked(item, is_generating):
             if item is None:
                 return [gr.update()] * len(load_data_outputs)
@@ -1173,15 +1252,46 @@ with shared.gradio_root:
                            outputs=load_data_outputs, queue=False, show_progress=True) \
             .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
 
-        generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True),
-                              outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating]) \
-            .then(fn=refresh_seed, inputs=[seed_random, image_seed], outputs=image_seed) \
-            .then(fn=get_task, inputs=ctrls, outputs=currentTask) \
-            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery]) \
-            .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False),
-                  outputs=[generate_button, stop_button, skip_button, state_is_generating]) \
-            .then(fn=update_history_link, outputs=history_link) \
-            .then(fn=lambda: None, **gc.js_kwarg('playNotification')).then(fn=lambda: None, **gc.js_kwarg('refresh_grid_delayed'))
+        def start_generation_ui():
+            return (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True),
+                    gr.update(visible=False, interactive=False), [], True, None)
+
+        start_generation_outputs = [stop_button, skip_button, generate_button, gallery, state_is_generating,
+                                    gallery_selected_index]
+
+        def run_generation(event, refresh_seed_first):
+            """The shared Generate pipeline, appended to ``event``."""
+            if refresh_seed_first:
+                event = event.then(fn=refresh_seed, inputs=[seed_random, image_seed], outputs=image_seed)
+            return event \
+                .then(fn=get_task, inputs=task_inputs, outputs=currentTask) \
+                .then(fn=lambda: None, outputs=draft_request) \
+                .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery]) \
+                .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False),
+                      outputs=[generate_button, stop_button, skip_button, state_is_generating]) \
+                .then(fn=update_history_link, outputs=history_link) \
+                .then(fn=lambda: None, **gc.js_kwarg('playNotification')).then(fn=lambda: None, **gc.js_kwarg('refresh_grid_delayed'))
+
+        run_generation(generate_button.click(start_generation_ui, outputs=start_generation_outputs),
+                       refresh_seed_first=True)
+
+        def prepare_full_render(task, index):
+            try:
+                seed = modules.draft_mode.seed_for_result(task, index)
+            except ValueError as exc:
+                raise gr.Error(str(exc))
+            return {'mode': 'full', 'seed': seed}
+
+        # .success() stops here when prepare_full_render raises (message shown as a toast).
+        run_generation(render_full_button.click(prepare_full_render, inputs=[currentTask, gallery_selected_index],
+                                                outputs=draft_request, queue=False, show_progress=False)
+                       .success(start_generation_ui, outputs=start_generation_outputs),
+                       refresh_seed_first=False)
+
+        def gallery_selected(evt: gr.SelectData):
+            return evt.index
+
+        gallery.select(gallery_selected, outputs=gallery_selected_index, queue=False, show_progress=False)
 
         reset_button.click(lambda: [worker.AsyncTask(args=[]), False, gr.update(visible=True, interactive=True)] +
                                    [gr.update(visible=False)] * 6 +
