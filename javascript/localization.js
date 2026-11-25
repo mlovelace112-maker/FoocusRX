@@ -81,7 +81,12 @@ function refresh_style_localization() {
 }
 
 function refresh_aspect_ratios_label(value) {
-    label = document.querySelector('#aspect_ratios_accordion div span');
+    // Gradio 4: '#aspect_ratios_accordion div span'; Gradio 5: '.label-wrap span'.
+    label = document.querySelector('#aspect_ratios_accordion .label-wrap span') ||
+        document.querySelector('#aspect_ratios_accordion div span');
+    if (!label) {
+        return;
+    }
     translation = getTranslation("Aspect Ratios");
     if (typeof translation == "undefined") {
         translation = "Aspect Ratios";

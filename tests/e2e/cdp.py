@@ -58,6 +58,38 @@ class Page:
             await self.send('Input.dispatchMouseEvent', type=kind, x=box[0], y=box[1], button='left', clickCount=1)
         return True
 
+    async def upload(self, css_selector, path):
+        """Set a local file on the first <input type=file> matching ``css_selector``."""
+        root = (await self.send('DOM.getDocument', depth=-1, pierce=True))['root']['nodeId']
+        node = (await self.send('DOM.querySelector', nodeId=root, selector=css_selector))['nodeId']
+        if not node:
+            return False
+        await self.send('DOM.setFileInputFiles', files=[path], nodeId=node)
+        return True
+
+    async def drag(self, selector_js, start=(0.3, 0.4), end=(0.7, 0.6), steps=12):
+        """Press, move and release the mouse across the element (fractions of its box)."""
+        box = await self.js(f"""(() => {{ const e=({selector_js}); if(!e) return null; e.scrollIntoView({{block:'center', behavior:'instant'}});
+                                const r=e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }})()""")
+        if not box:
+            return False
+        await asyncio.sleep(0.25)
+        x0, y0, w, h = box
+
+        def at(fx, fy):
+            return x0 + fx * w, y0 + fy * h
+        x, y = at(*start)
+        await self.send('Input.dispatchMouseEvent', type='mouseMoved', x=x, y=y)
+        await self.send('Input.dispatchMouseEvent', type='mousePressed', x=x, y=y, button='left', clickCount=1)
+        for i in range(1, steps + 1):
+            fx = start[0] + (end[0] - start[0]) * i / steps
+            fy = start[1] + (end[1] - start[1]) * i / steps
+            x, y = at(fx, fy)
+            await self.send('Input.dispatchMouseEvent', type='mouseMoved', x=x, y=y, button='left', buttons=1)
+            await asyncio.sleep(0.03)
+        await self.send('Input.dispatchMouseEvent', type='mouseReleased', x=x, y=y, button='left', clickCount=1)
+        return True
+
     async def wheel(self, selector_js, delta_y, times=1):
         box = await self.js(f"""(() => {{ const r=({selector_js}).getBoundingClientRect();
                                 return [r.x+r.width/2, r.y+r.height/2]; }})()""")
