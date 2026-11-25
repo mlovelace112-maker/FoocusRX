@@ -234,10 +234,12 @@ onUiLoaded(async() => {
         }
 
         // Reset zoom when uploading a new image
-        const fileInput = gradioApp().querySelector(
-            `${elemId} input[type="file"][accept="image/*"].svelte-116rqfv`
-        );
-        fileInput.addEventListener("click", resetZoom);
+        // (Gradio 4 dropped the .svelte-116rqfv class this used to require,
+        // which made it throw on every page load.)
+        const fileInput = gradioApp().querySelector(`${elemId} input[type="file"]`);
+        if (fileInput) {
+            fileInput.addEventListener("click", resetZoom);
+        }
 
         // Update the zoom level and pan position of the target element based on the values of the zoomLevel, panX and panY variables
         function updateZoom(newZoomLevel, mouseX, mouseY) {
