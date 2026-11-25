@@ -67,3 +67,6 @@ user_path_config-deprecated.txt
 
 # Claude Code local state (worktrees, session settings).
 .claude/
+
+# Browser-test scratch trash (tests/e2e)
+outputs-e2e-trash/
