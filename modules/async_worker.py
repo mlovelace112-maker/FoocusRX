@@ -5,6 +5,8 @@ from modules import gradio_compat as gc
 from modules.patch import PatchSettings, patch_settings, patch_all
 from modules.prompt_queue import split_prompt_queue, queue_progress_title
 import modules.config
+import modules.quality_prompts as quality_prompts
+import modules.util
 
 patch_all()
 
@@ -160,6 +162,7 @@ class AsyncTask:
         # Appended after the enhance controls; absent when a caller builds a
         # task without it, so default to off.
         self.prompt_queue = bool(args.pop()) if args else False
+        self.auto_quality = bool(args.pop()) if args else False  # modules/quality_prompts.py
 
         self.should_enhance = self.enhance_checkbox and (self.enhance_uov_method != disabled.casefold() or len(self.enhance_ctrls) > 0)
         self.images_to_enhance_count = 0
@@ -419,6 +422,8 @@ def worker():
                 d.append(('CLIP Skip', 'clip_skip', async_task.clip_skip))
             d.append(('Sampler', 'sampler', async_task.sampler_name))
             d.append(('Scheduler', 'scheduler', async_task.scheduler_name))
+            if task.get('quality'):
+                d.append(('Auto quality prompts', 'auto_quality_prompts', task['quality']))
             d.append(('VAE', 'vae', async_task.vae_name))
             d.append(('Seed', 'seed', str(task['task_seed'])))
 
@@ -717,6 +722,11 @@ def worker():
         if advance_progress:
             current_progress += 1
         progressbar(async_task, current_progress, 'Processing prompts ...')
+        quality_family = None
+        if getattr(async_task, 'auto_quality', False):
+            quality_family = quality_prompts.family_for_model(
+                async_task.base_model_name,
+                modules.util.get_file_from_folder_list(async_task.base_model_name, modules.config.paths_checkpoints))
         tasks = []
         for i in range(image_number):
             if disable_seed_increment:
@@ -762,6 +772,16 @@ def worker():
             positive_basic_workloads = positive_basic_workloads + task_extra_positive_prompts
             negative_basic_workloads = negative_basic_workloads + task_extra_negative_prompts
 
+            quality_used = None
+            if quality_family is not None:
+                q_positive, q_negative = quality_prompts.additions(
+                    quality_family, ', '.join(positive_basic_workloads), ', '.join(negative_basic_workloads))
+                if q_positive:
+                    positive_basic_workloads = positive_basic_workloads + [q_positive]
+                if q_negative:
+                    negative_basic_workloads = negative_basic_workloads + [q_negative]
+                quality_used = quality_family if (q_positive or q_negative) else None
+
             positive_basic_workloads = remove_empty_str(positive_basic_workloads, default=task_prompt)
             negative_basic_workloads = remove_empty_str(negative_basic_workloads, default=task_negative_prompt)
 
@@ -778,7 +798,8 @@ def worker():
                 negative_top_k=len(negative_basic_workloads),
                 log_positive_prompt='\n'.join([task_prompt] + task_extra_positive_prompts),
                 log_negative_prompt='\n'.join([task_negative_prompt] + task_extra_negative_prompts),
-                styles=task_styles
+                styles=task_styles,
+                quality=quality_used,
             ))
         if use_expansion:
             if advance_progress:
@@ -1161,6 +1182,11 @@ def worker():
             prompt = ', '.join(apply_arrays(apply_wildcards(line, rng, i, async_task.read_wildcards_in_order), i)
                                for line in prompt_lines)
             text = flux_app.build_prompt(prompt, async_task.style_selections, styles_table, rng)
+            quality_added = ''
+            if getattr(async_task, 'auto_quality', False):
+                quality_added, _ = quality_prompts.additions('flux', text)
+                if quality_added:
+                    text = f'{text.rstrip(". ")}. {quality_added}'
 
             def on_step(step, steps, i=i):
                 ldm_patched.modules.model_management.throw_exception_if_processing_interrupted()
@@ -1197,6 +1223,7 @@ def worker():
                 ('Seed', 'seed', str(seed)),
                 ('Base Model', 'base_model', flux_app.FLUX_MODEL_NAME),
                 ('FLUX steps', 'flux_steps', 4),
+                *([('Auto quality prompts', 'auto_quality_prompts', 'flux')] if quality_added else []),
                 ('FLUX sampler', 'flux_sampler', 'flow-matching euler'),
                 ('Version', 'version', 'FoocusRX FLUX.1 schnell'),
             ]

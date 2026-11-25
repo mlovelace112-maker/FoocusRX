@@ -622,6 +622,10 @@ with shared.gradio_root:
                 prompt_queue = gr.Checkbox(label='Prompt queue (one prompt per line)', value=False,
                                            info='Each non-empty prompt line becomes its own generation, '
                                                 'with the settings and Image Number above.')
+                auto_quality_prompts = gr.Checkbox(label='Auto quality prompts', value=True,
+                                                   info='Adds quality tags and a negative prompt suited to the '
+                                                        'selected model (Pony, anime, photo, FLUX…). Your prompt '
+                                                        'box is not changed; the additions are in the saved full prompt.')
                 draft_mode = gr.Checkbox(label='Draft mode (fast previews)', value=False,
                                          info=f'{modules.draft_mode.DRAFT_STEPS}-step previews with the DPM++ 2M '
                                               'sampler, about 2.5x faster. Click a draft in the gallery, then '
@@ -1163,7 +1167,8 @@ with shared.gradio_root:
                   enhance_input_image, enhance_checkbox, enhance_uov_method, enhance_uov_processing_order,
                   enhance_uov_prompt_type]
         ctrls += enhance_ctrls
-        ctrls += [prompt_queue]  # must stay last: AsyncTask reads it after the enhance controls
+        ctrls += [prompt_queue]  # AsyncTask reads these after the enhance controls, in this order
+        ctrls += [auto_quality_prompts]
 
         # get_task drops currentTask (ctrls[0]), hence the -1.
         DRAFT_ARG_INDEX.update({
