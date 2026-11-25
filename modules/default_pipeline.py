@@ -224,6 +224,8 @@ def prepare_text_encoder(async_call=True):
     if async_call:
         # TODO: make sure that this is always called in an async way so that users cannot feel it.
         pass
+    if final_clip is None or final_expansion is None:
+        return  # nothing loaded yet (models load on first generation)
     assert_model_integrity()
     ldm_patched.modules.model_management.load_models_gpu([final_clip.patcher, final_expansion.patcher])
     return
@@ -267,12 +269,27 @@ def refresh_everything(refiner_model_name, base_model_name, loras,
     return
 
 
-refresh_everything(
-    refiner_model_name=modules.config.default_refiner_model_name,
-    base_model_name=modules.config.default_base_model_name,
-    loras=get_enabled_loras(modules.config.default_loras),
-    vae_name=modules.config.default_vae,
-)
+def preload_default_models():
+    refresh_everything(
+        refiner_model_name=modules.config.default_refiner_model_name,
+        base_model_name=modules.config.default_base_model_name,
+        loras=get_enabled_loras(modules.config.default_loras),
+        vae_name=modules.config.default_vae,
+    )
+
+
+# SDXL used to load here, at import (app start), even when the session only
+# uses FLUX.1 (~7 GB on unified memory). Generation loads the models it needs
+# (process_prompt / ensure_loaded), so startup skips it unless asked for.
+if os.environ.get('FOOOCUS_PRELOAD_SDXL') == '1':
+    preload_default_models()
+
+
+def ensure_loaded(base_model_name, refiner_model_name='None', loras=None, vae_name=None):
+    """Load SDXL if nothing is loaded yet (paths that skip prompt processing)."""
+    if final_unet is None or final_vae is None:
+        refresh_everything(refiner_model_name=refiner_model_name, base_model_name=base_model_name,
+                           loras=loras or [], vae_name=vae_name)
 
 
 @torch.no_grad()

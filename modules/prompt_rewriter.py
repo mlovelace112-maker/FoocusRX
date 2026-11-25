@@ -3,8 +3,9 @@ local language model (Qwen2.5-1.5B-Instruct, Apache-2.0).
 
 The output style follows the selected base model: comma-separated phrases for
 SDXL, booru-style tags for Pony/anime checkpoints, natural sentences for
-FLUX.1. The model is loaded for each rewrite and freed afterwards (~3 GB), so
-it never sits in memory next to the image model. Download it with
+FLUX.1. The model (~3 GB) stays loaded for KEEP_ALIVE seconds after a rewrite
+so follow-up rewrites are fast, then it is freed; Generate frees it at once
+(release()) so it never sits next to the image model. Download it with
 scripts/download_prompt_model.py.
 """
 import gc
@@ -49,7 +50,51 @@ SYSTEM = ("You are an expert prompt writer for the text-to-image model {target}.
           "Do not add text, captions, watermarks or real people's names. {format} "
           "Reply with the prompt only: no quotes, labels or explanations.")
 
-_lock = threading.Lock()
+_lock = threading.RLock()
+# Seconds to keep the model loaded after a rewrite (FOOOCUS_REWRITER_KEEP_ALIVE; 0 = free at once).
+KEEP_ALIVE = float(os.environ.get('FOOOCUS_REWRITER_KEEP_ALIVE', '60'))
+_cache = {}   # 'key', 'model', 'tokenizer', 'device', 'timer'
+
+
+def is_loaded() -> bool:
+    return 'model' in _cache
+
+
+def release():
+    """Free the cached model now (called when a generation starts)."""
+    with _lock:
+        timer = _cache.pop('timer', None)
+        if timer is not None:
+            timer.cancel()
+        model = _cache.pop('model', None)
+        device = _cache.get('device')
+        _cache.clear()
+        if model is None:
+            return False
+        del model
+        gc.collect()
+        try:
+            import torch
+            if device == 'mps':
+                torch.mps.empty_cache()
+            elif device == 'cuda':
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        return True
+
+
+def _schedule_release():
+    timer = _cache.pop('timer', None)
+    if timer is not None:
+        timer.cancel()
+    if KEEP_ALIVE <= 0:
+        release()
+        return
+    timer = threading.Timer(KEEP_ALIVE, release)
+    timer.daemon = True
+    _cache['timer'] = timer
+    timer.start()
 
 
 def model_dir(base: str | None = None) -> str:
@@ -118,13 +163,17 @@ def rewrite(idea: str, style: str, seed: int | None = None, base: str | None = N
     dtype = torch.bfloat16 if device in ('mps', 'cuda') else torch.float32
     directory = model_dir(base)
     with _lock:
-        tokenizer = AutoTokenizer.from_pretrained(directory, local_files_only=True)
-        # 'eager' attention: with bf16 + the default SDPA path on MPS this model
-        # degenerates into repeating the prompt (measured; fp32 or eager are
-        # fine). Eager also avoids the mtlflashattn SDPA patch the app installs.
-        model = AutoModelForCausalLM.from_pretrained(directory, torch_dtype=dtype, local_files_only=True,
-                                                     attn_implementation='eager')
-        model = model.to(device).eval()
+        key = (directory, device, str(dtype))
+        if _cache.get('key') != key:
+            release()
+            tokenizer = AutoTokenizer.from_pretrained(directory, local_files_only=True)
+            # 'eager' attention: with bf16 + the default SDPA path on MPS this model
+            # degenerates into repeating the prompt (measured; fp32 or eager are
+            # fine). Eager also avoids the mtlflashattn SDPA patch the app installs.
+            model = AutoModelForCausalLM.from_pretrained(directory, torch_dtype=dtype, local_files_only=True,
+                                                         attn_implementation='eager')
+            _cache.update(key=key, model=model.to(device).eval(), tokenizer=tokenizer, device=device)
+        model, tokenizer = _cache['model'], _cache['tokenizer']
         try:
             text = tokenizer.apply_chat_template(build_messages(idea, style), tokenize=False,
                                                  add_generation_prompt=True)
@@ -137,11 +186,7 @@ def rewrite(idea: str, style: str, seed: int | None = None, base: str | None = N
             reply = tokenizer.decode(out[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
         finally:
             del model
-            gc.collect()
-            if device == 'mps':
-                torch.mps.empty_cache()
-            elif device == 'cuda':
-                torch.cuda.empty_cache()
+            _schedule_release()
     result = clean_output(reply, style)
     if not result:
         raise RuntimeError('The rewriter returned an empty prompt; try again.')
