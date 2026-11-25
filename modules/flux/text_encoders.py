@@ -30,13 +30,15 @@ T5_XXL_CONFIG = dict(
 )
 
 
-def _load_weights(path: str, dtype: torch.dtype) -> dict:
-    """Read a .safetensors file, converting each tensor to ``dtype`` as it is
-    read so only one full-precision copy ever exists."""
+def _load_weights(path: str, dtype: torch.dtype, device) -> dict:
+    """Read a .safetensors file, converting and moving each tensor to the
+    device as it is read. Building the whole state dict on the CPU first and
+    then moving the model would briefly hold two ~9.5 GB copies of T5 (unified
+    memory is shared), which pushed a 24 GB Mac into heavy swap."""
     out = {}
     with safe_open(path, framework='pt', device='cpu') as fh:
         for key in fh.keys():
-            out[key] = fh.get_tensor(key).to(dtype)
+            out[key] = fh.get_tensor(key).to(device=device, dtype=dtype)
     return out
 
 
@@ -64,7 +66,7 @@ class T5Encoder:
                                          eos_token='</s>', pad_token='<pad>', unk_token='<unk>', extra_ids=0)
         with torch.device('meta'):
             model = T5EncoderModel(T5Config(**T5_XXL_CONFIG))
-        self.model = _assign(model, _load_weights(weights_path, dtype), device)
+        self.model = _assign(model, _load_weights(weights_path, dtype, device), device)
 
     @torch.no_grad()
     def __call__(self, prompts: list[str]) -> torch.Tensor:
@@ -83,7 +85,7 @@ class ClipEncoder:
             config = CLIPTextConfig(**{k: v for k, v in json.load(fh).items() if k not in ('architectures', '_name_or_path')})
         with torch.device('meta'):
             model = CLIPTextModel(config)
-        self.model = _assign(model, _load_weights(weights_path, dtype), device)
+        self.model = _assign(model, _load_weights(weights_path, dtype, device), device)
 
     @torch.no_grad()
     def __call__(self, prompts: list[str]) -> torch.Tensor:
