@@ -1129,7 +1129,92 @@ def worker():
 
     @torch.no_grad()
     @torch.inference_mode()
+    def handle_flux(async_task: AsyncTask):
+        """FLUX.1 schnell text-to-image (modules/flux). Only the settings in
+        flux.app.UNSUPPORTED_NOTICE's "uses" list apply."""
+        import modules.flux.app as flux_app
+        import modules.constants as constants
+        from modules.private_logger import log
+        from modules.sdxl_styles import styles as styles_table  # apply_arrays/apply_wildcards: worker scope
+
+        async_task.processing = True
+        started = time.perf_counter()
+        progressbar(async_task, 1, 'Freeing SDXL and loading FLUX.1 schnell ...')
+        flux_app.free_sdxl()
+        flux = flux_app.get_pipeline()
+        before = dict(vars(flux.timings))
+
+        width, height = (int(v) for v in async_task.aspect_ratios_selection.replace('×', ' ').split(' ')[:2])
+        if async_task.overwrite_width > 0:
+            width = async_task.overwrite_width
+        if async_task.overwrite_height > 0:
+            height = async_task.overwrite_height
+        total = async_task.image_number
+        prompt_lines = [line.strip() for line in async_task.prompt.splitlines() if line.strip()]
+
+        for i in range(total):
+            if async_task.last_stop == 'stop':
+                break
+            seed = async_task.seed if async_task.disable_seed_increment else async_task.seed + i
+            seed %= constants.MAX_SEED + 1
+            rng = random.Random(seed)
+            prompt = ', '.join(apply_arrays(apply_wildcards(line, rng, i, async_task.read_wildcards_in_order), i)
+                               for line in prompt_lines)
+            text = flux_app.build_prompt(prompt, async_task.style_selections, styles_table, rng)
+
+            def on_step(step, steps, i=i):
+                ldm_patched.modules.model_management.throw_exception_if_processing_interrupted()
+                done = (i + (step + 1) / steps) / total
+                async_task.yields.append(['preview', (int(5 + 90 * done),
+                                                      f'FLUX.1 schnell step {step + 1}/{steps}, image {i + 1}/{total} ...',
+                                                      None)])
+
+            progressbar(async_task, int(5 + 90 * i / total), f'Encoding prompt for image {i + 1}/{total} ...')
+            try:
+                image = flux.generate(text, width, height, seed, callback=on_step)
+            except ldm_patched.modules.model_management.InterruptProcessingException:
+                if async_task.last_stop == 'skip':
+                    print('User skipped')
+                    async_task.last_stop = False
+                    continue
+                print('User stopped')
+                break
+
+            # Censor before saving, as the SDXL path does (yield_result's own
+            # censoring would only blank the preview, not the saved file).
+            if modules.config.default_black_out_nsfw or async_task.black_out_nsfw:
+                progressbar(async_task, int(5 + 90 * (i + 1) / total), 'Checking for NSFW content ...')
+                image = default_censor(image)
+
+            # Flux-only keys for steps/sampler: "performance", "steps" and
+            # "sampler" are loaded into the SDXL controls by "Load these
+            # settings", where Flux values would be invalid (or force 4 steps).
+            metadata = [
+                ('Prompt', 'prompt', prompt),
+                ('Full prompt', 'full_prompt', text),
+                ('Styles', 'styles', str([s for s in async_task.style_selections if s != 'Fooocus V2'])),
+                ('Resolution', 'resolution', str((image.shape[1], image.shape[0]))),
+                ('Seed', 'seed', str(seed)),
+                ('Base Model', 'base_model', flux_app.FLUX_MODEL_NAME),
+                ('FLUX steps', 'flux_steps', 4),
+                ('FLUX sampler', 'flux_sampler', 'flow-matching euler'),
+                ('Version', 'version', 'FoocusRX FLUX.1 schnell'),
+            ]
+            path = log(image, metadata, metadata_parser=None, output_format=async_task.output_format)
+            yield_result(async_task, [path], int(5 + 90 * (i + 1) / total), async_task.black_out_nsfw, censor=False)
+
+        spent = {k: v - before[k] for k, v in vars(flux.timings).items()}  # this run only
+        print(f'[FLUX] {total} image(s) in {time.perf_counter() - started:.1f} s '
+              f'(text {spent["text_s"]:.1f} s, load {spent["load_s"]:.1f} s, sampling {spent["sample_s"]:.1f} s, '
+              f'decode {spent["decode_s"]:.1f} s)')
+        async_task.processing = False
+
     def handler(async_task: AsyncTask):
+        import modules.flux.app as flux_app
+        if flux_app.is_flux(async_task.base_model_name):
+            return handle_flux(async_task)
+        flux_app.unload()  # Flux and SDXL don't fit in memory together on 24 GB
+
         preparation_start_time = time.perf_counter()
         async_task.processing = True
 
@@ -1560,7 +1645,9 @@ def worker():
             if task.generate_image_grid:
                 build_image_wall(task)
             task.yields.append(['finish', task.results])
-            pipeline.prepare_text_encoder(async_call=True)
+            import modules.flux.app as flux_app
+            if not flux_app.is_flux(task.base_model_name):  # SDXL was freed for Flux; nothing to warm up
+                pipeline.prepare_text_encoder(async_call=True)
         except BaseException:
             # Deliberately broad: this is the only generation thread, so it
             # must survive anything a task throws, including BaseException

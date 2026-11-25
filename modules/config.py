@@ -201,6 +201,7 @@ path_fooocus_expansion = get_dir_or_set_default('path_fooocus_expansion', '../mo
 path_wildcards = get_dir_or_set_default('path_wildcards', '../wildcards/')
 path_safety_checker = get_dir_or_set_default('path_safety_checker', '../models/safety_checker/')
 path_sam = get_dir_or_set_default('path_sam', '../models/sam/')
+path_flux = get_dir_or_set_default('path_flux', '../models/flux/')  # FLUX.1 schnell (modules/flux)
 path_outputs = get_path_output()
 
 
@@ -813,6 +814,11 @@ def get_model_filenames(folder_paths, extensions=None, name_filter=None):
 def update_files():
     global model_filenames, lora_filenames, vae_filenames, wildcard_filenames, available_presets
     model_filenames = get_model_filenames(paths_checkpoints)
+    try:  # FLUX.1 schnell appears as a base model when its files and packages are present
+        from modules.flux.app import model_choices
+        model_filenames += model_choices(path_flux)
+    except Exception as exc:
+        print(f'[flux] not available: {exc}')
     lora_filenames = get_model_filenames(paths_loras)
     vae_filenames = get_model_filenames(path_vae)
     wildcard_filenames = get_files_from_folder(path_wildcards, ['.txt'])

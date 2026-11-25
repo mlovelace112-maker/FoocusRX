@@ -188,6 +188,18 @@ class TestToLoadParameters(unittest.TestCase):
         self.assertNotIn('lora_combined_3', p)
         self.assertNotIn('lora_combined_4', p)
 
+    def test_unknown_choices_are_dropped(self):
+        p = self.convert(performance='FLUX.1 schnell', sampler='flow-matching euler', scheduler='nope')
+        self.assertNotIn('performance', p)
+        self.assertNotIn('sampler', p)
+        self.assertNotIn('scheduler', p)
+        p = self.convert(performance='Speed', sampler='dpmpp_2m_sde_gpu', scheduler='karras')
+        self.assertEqual((p['performance'], p['sampler'], p['scheduler']), ('Speed', 'dpmpp_2m_sde_gpu', 'karras'))
+
+    def test_gguf_step_count_is_not_an_sdxl_override(self):
+        self.assertNotIn('steps', self.convert(base_model='flux1-schnell-Q4_K_S.gguf', steps=4))
+        self.assertEqual(self.convert(base_model=MODEL, steps=30)['steps'], 30)
+
     def test_does_not_mutate_input(self):
         meta = {'base_model': 'juggernautXL_v8Rundiffusion'}
         history.to_load_parameters(meta, [MODEL], [], [])

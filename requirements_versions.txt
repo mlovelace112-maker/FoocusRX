@@ -2,6 +2,8 @@ torchsde==0.2.6
 einops==0.8.0
 transformers==4.42.4
 safetensors==0.4.3
+gguf==0.10.0
+sentencepiece==0.2.0
 accelerate==0.32.1
 pyyaml==6.0.1
 pillow==10.4.0

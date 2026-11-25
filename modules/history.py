@@ -187,6 +187,17 @@ def to_load_parameters(metadata: dict, model_filenames, lora_filenames, vae_file
     for key in ('base_model', 'refiner_model'):
         if key in params:
             params[key] = _resolve_filename(params[key], model_filenames)
+    # Drop choices this app can't show (e.g. records from FLUX.1 or another
+    # tool): an unknown Performance would break the next Generate.
+    from modules.flags import Performance, sampler_list, scheduler_list
+    for key, valid in (('performance', Performance.values()), ('sampler', sampler_list),
+                       ('scheduler', scheduler_list)):
+        if key in params and params[key] not in valid:
+            del params[key]
+    # A GGUF model's step count isn't an SDXL step override (it would force
+    # e.g. 4 steps on the next SDXL image).
+    if str(metadata.get('base_model', '')).lower().endswith('.gguf'):
+        params.pop('steps', None)
     from modules.flags import default_vae
     if 'vae' in params and params['vae'] != default_vae:
         params['vae'] = _resolve_filename(params['vae'], vae_filenames)
