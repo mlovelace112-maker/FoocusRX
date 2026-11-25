@@ -320,6 +320,94 @@ class TestPromptLibrary(unittest.TestCase):
         self.assertEqual(out['exceptions'], [])
 
 
+VIEWER = """(() => { const v = document.getElementById('rx_viewer'); const img = document.getElementById('rx_viewer_img');
+  return {open: !!(v && v.classList.contains('open') && getComputedStyle(v).display !== 'none'), actual: !!(v && v.classList.contains('actual')),
+          src: img ? img.getAttribute('src') : null, natural_w: img ? img.naturalWidth : 0,
+          shown_w: img ? img.getBoundingClientRect().width : 0,
+          count: (document.getElementById('rx_viewer_count') || {}).textContent || ''}; })()"""
+
+
+async def press(page, key):
+    codes = {'Escape': 27, 'ArrowLeft': 37, 'ArrowRight': 39}
+    for kind in ('keyDown', 'keyUp'):
+        await page.send('Input.dispatchKeyEvent', type=kind, key=key, code=key, windowsVirtualKeyCode=codes[key])
+    await asyncio.sleep(0.4)
+
+
+@unittest.skipUnless(URL, 'set FOOOCUS_E2E_URL to run browser tests')
+class TestViewer(unittest.TestCase):
+    def test_history_view_larger_opens_the_original(self):
+        async def scenario(page):
+            out = {}
+            await open_history(page)
+            await page.click(f'{THUMBS}[0]')
+            await page.wait_for("!document.querySelector('#history_fav').disabled", timeout=10)
+            await page.click("document.querySelector('#history_view')")
+            await page.wait_for("(document.getElementById('rx_viewer_img') || {}).naturalWidth > 0", timeout=15)
+            out['opened'] = await page.js(VIEWER)
+            await shot(page, 'viewer_history')
+            await page.click("document.getElementById('rx_viewer_img')")   # actual size
+            await asyncio.sleep(0.5)
+            out['actual'] = await page.js(VIEWER)
+            await press(page, 'Escape')
+            out['closed'] = await page.js(VIEWER)
+            out['exceptions'] = page.exceptions
+            return out
+        out = run(scenario)
+        opened = out['opened']
+        self.assertTrue(opened['open'])
+        self.assertNotRegex(opened['src'], r'\.(png|jpe?g|webp)\.jpg')   # not the cached thumbnail
+        self.assertGreater(opened['natural_w'], 384)                       # full resolution
+        self.assertEqual(opened['count'], '')                              # single image: no counter
+        self.assertTrue(out['actual']['actual'])
+        self.assertAlmostEqual(out['actual']['shown_w'], opened['natural_w'], delta=2)
+        self.assertFalse(out['closed']['open'])
+        self.assertEqual(out['exceptions'], [])
+
+
+@unittest.skipUnless(URL and os.environ.get('FOOOCUS_E2E_GENERATE') == '1',
+                     'set FOOOCUS_E2E_URL and FOOOCUS_E2E_GENERATE=1 (uses the GPU for minutes)')
+class TestGalleryViewer(unittest.TestCase):
+    def test_view_larger_from_the_main_gallery(self):
+        async def scenario(page):
+            out = {}
+            await set_textbox(page, '#positive_prompt textarea', 'a lighthouse on a cliff at sunset')
+            if not await page.pick_family('FLUX.1'):
+                return None
+            await page.click("document.querySelector('#generate_button')")
+            await page.wait_for("(() => { const s=document.querySelector('#stop_button'); return s && s.offsetParent !== null; })()", timeout=60)
+            await page.wait_for("document.querySelector('#generate_button').offsetParent !== null && "
+                                "document.querySelectorAll('#final_gallery img').length > 0", timeout=900)
+            await asyncio.sleep(1.0)
+            await page.click("document.querySelector('#view_larger_button')")
+            await page.wait_for("(document.getElementById('rx_viewer_img') || {}).naturalWidth > 0", timeout=15)
+            out['first'] = await page.js(VIEWER)
+            await press(page, 'ArrowRight')
+            out['next'] = await page.js(VIEWER)
+            await shot(page, 'viewer_gallery')
+            await press(page, 'Escape')
+            out['closed'] = await page.js(VIEWER)
+            img_box = "[...document.querySelectorAll('#final_gallery img')].pop()"
+            box = await page.js(f"(() => {{ const r = ({img_box}).getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; }})()")
+            await page.send('Input.dispatchMouseEvent', type='mousePressed', x=box[0], y=box[1], button='left', clickCount=2)
+            await page.send('Input.dispatchMouseEvent', type='mouseReleased', x=box[0], y=box[1], button='left', clickCount=2)
+            await asyncio.sleep(0.8)
+            out['dblclick'] = await page.js(VIEWER)
+            out['exceptions'] = page.exceptions
+            return out
+        out = run(scenario)
+        if out is None:
+            self.skipTest('FLUX.1 is not installed')
+        self.assertTrue(out['first']['open'])
+        self.assertEqual(out['first']['count'], '1 / 2')        # default Image Number is 2
+        self.assertEqual(out['next']['count'], '2 / 2')
+        self.assertNotEqual(out['first']['src'], out['next']['src'])
+        self.assertGreater(out['first']['natural_w'], 800)
+        self.assertFalse(out['closed']['open'])
+        self.assertTrue(out['dblclick']['open'])
+        self.assertEqual(out['exceptions'], [])
+
+
 @unittest.skipUnless(URL and os.environ.get('FOOOCUS_E2E_GENERATE') == '1',
                      'set FOOOCUS_E2E_URL and FOOOCUS_E2E_GENERATE=1 (uses the GPU for minutes)')
 class TestCompare(unittest.TestCase):

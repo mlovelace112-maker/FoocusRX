@@ -29,7 +29,7 @@ def webpath(fn):
 
 
 JS_FILES = ('script.js', 'contextMenus.js', 'localization.js', 'zoom.js', 'edit-attention.js', 'viewer.js',
-            'imageviewer.js')
+            'imageviewer.js', 'rx_viewer.js')
 
 
 def _inline_script(name):
