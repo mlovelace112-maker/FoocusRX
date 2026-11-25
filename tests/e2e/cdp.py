@@ -45,7 +45,12 @@ class Page:
 
     async def click(self, selector_js):
         """Real mouse click at the centre of the element ``selector_js`` returns."""
-        box = await self.js(f"""(() => {{ const e=({selector_js}); if(!e) return null; e.scrollIntoView({{block:'center'}});
+        found = await self.js(f"""(() => {{ const e=({selector_js}); if(!e) return false;
+                                 e.scrollIntoView({{block:'center', behavior:'instant'}}); return true; }})()""")
+        if not found:
+            return False
+        await asyncio.sleep(0.25)  # let scrolling settle, then measure where the element really is
+        box = await self.js(f"""(() => {{ const e=({selector_js}); if(!e) return null;
                                 const r=e.getBoundingClientRect(); return [r.x+r.width/2, r.y+r.height/2]; }})()""")
         if not box:
             return False

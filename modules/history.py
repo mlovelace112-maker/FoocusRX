@@ -253,14 +253,19 @@ def _unique_path(directory: str, name: str) -> str:
     return candidate
 
 
-def delete_items(paths, outputs_root: str, trash_dir: str | None = None):
-    """Move images to the trash. Returns (moves, skipped): ``moves`` is a list
-    of (original_path, trashed_path) for restore_items; ``skipped`` lists the
-    paths that were refused or failed."""
+def delete_items(paths, outputs_root: str, trash_dir: str | None = None, log_remover=None):
+    """Move images to the trash. Returns (moves, skipped).
+
+    ``moves`` is a list of (original_path, trashed_path, log_block) for
+    restore_items; ``log_block`` is the image's removed log.html entry (or
+    None). ``log_remover(html_name, filenames) -> {filename: block}`` drops
+    entries from a day's log (private_logger.remove_log_entries). Each image's
+    cached thumbnail is removed too. ``skipped`` lists refused/failed paths.
+    """
     import shutil
 
     trash_dir = trash_dir or default_trash_dir(outputs_root)
-    moves, skipped = [], []
+    moved, skipped = [], []
     for path in dict.fromkeys(paths or []):  # unique, order kept
         if not is_deletable(path, outputs_root):
             skipped.append(path)
@@ -269,23 +274,174 @@ def delete_items(paths, outputs_root: str, trash_dir: str | None = None):
             os.makedirs(trash_dir, exist_ok=True)
             target = _unique_path(trash_dir, os.path.basename(path))
             shutil.move(os.path.realpath(path), target)
-            moves.append((os.path.realpath(path), target))
+            moved.append((os.path.realpath(path), target))
         except OSError:
             skipped.append(path)
-    return moves, skipped
+    blocks = {}
+    if log_remover is not None:
+        by_day = {}
+        for original, _ in moved:
+            by_day.setdefault(os.path.dirname(original), []).append(os.path.basename(original))
+        for day_dir, names in by_day.items():
+            try:
+                for name, block in (log_remover(os.path.join(day_dir, 'log.html'), names) or {}).items():
+                    blocks[os.path.join(day_dir, name)] = block
+            except Exception:
+                pass  # the images are already safe in the trash; the log is cosmetic
+    for original, _ in moved:
+        try:
+            os.remove(thumbnail_path(original, outputs_root))
+        except OSError:
+            pass
+    return [(original, target, blocks.get(original)) for original, target in moved], skipped
 
 
-def restore_items(moves) -> int:
-    """Undo delete_items. Files whose original name is taken are left in the trash."""
+def restore_items(moves, log_restorer=None) -> int:
+    """Undo delete_items (also puts log entries back via ``log_restorer``).
+    Files whose original name is taken are left in the trash."""
     import shutil
 
-    restored = 0
-    for original, trashed in moves or []:
+    restored, blocks = 0, {}
+    for move in moves or []:
+        original, trashed = move[0], move[1]
+        block = move[2] if len(move) > 2 else None
         if os.path.exists(trashed) and not os.path.exists(original):
             try:
                 os.makedirs(os.path.dirname(original), exist_ok=True)
                 shutil.move(trashed, original)
                 restored += 1
+                if block:
+                    blocks.setdefault(os.path.dirname(original), []).append(block)
             except OSError:
                 pass
+    if log_restorer is not None:
+        for day_dir, day_blocks in blocks.items():
+            try:
+                log_restorer(os.path.join(day_dir, 'log.html'), day_blocks)
+            except Exception:
+                pass
     return restored
+
+
+# --- Thumbnails ----------------------------------------------------------------
+#
+# Small JPEGs under <outputs>/.thumbs/<day>/ (outside the dated folders, so the
+# scan and Delete never see them), regenerated when the image is newer.
+
+THUMB_DIR = '.thumbs'
+THUMB_SIZE = 384
+
+
+def thumbnail_path(path: str, outputs_root: str) -> str:
+    day = os.path.basename(os.path.dirname(path))
+    return os.path.join(outputs_root, THUMB_DIR, day, os.path.basename(path) + '.jpg')
+
+
+def ensure_thumbnail(path: str, outputs_root: str, size: int = THUMB_SIZE) -> str:
+    """Path of a cached thumbnail for ``path`` (created if missing or stale);
+    the original path if a thumbnail can't be made."""
+    thumb = thumbnail_path(path, outputs_root)
+    try:
+        if os.path.getmtime(thumb) >= os.path.getmtime(path):
+            return thumb
+    except OSError:
+        pass
+    try:
+        from PIL import Image
+        os.makedirs(os.path.dirname(thumb), exist_ok=True)
+        with Image.open(path) as image:
+            image.thumbnail((size, size))
+            tmp = thumb + '.tmp'
+            image.convert('RGB').save(tmp, 'JPEG', quality=85)
+        os.replace(tmp, thumb)
+        return thumb
+    except Exception:
+        return path
+
+
+# --- Favourites and ratings ------------------------------------------------------
+#
+# Stored in <outputs>/.history_ratings.json keyed by "<day>/<filename>", so they
+# survive Delete + Undo (same path) and never touch the images.
+
+RATINGS_FILE = '.history_ratings.json'
+
+
+class RatingsStore:
+    def __init__(self, outputs_root: str):
+        import threading
+        self.path = os.path.join(outputs_root, RATINGS_FILE)
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def key(path: str) -> str:
+        return f'{os.path.basename(os.path.dirname(path))}/{os.path.basename(path)}'
+
+    def load(self) -> dict:
+        try:
+            with open(self.path, encoding='utf-8') as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def get(self, path: str) -> dict:
+        entry = self.load().get(self.key(path)) or {}
+        return {'favourite': bool(entry.get('favourite')), 'stars': int(entry.get('stars') or 0)}
+
+    def update(self, path: str, favourite=None, stars=None) -> dict:
+        with self._lock:
+            data = self.load()
+            entry = dict(data.get(self.key(path)) or {})
+            if favourite is not None:
+                entry['favourite'] = bool(favourite)
+            if stars is not None:
+                entry['stars'] = max(0, min(5, int(stars)))
+            if entry.get('favourite') or entry.get('stars'):
+                data[self.key(path)] = entry
+            else:
+                data.pop(self.key(path), None)
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            tmp = self.path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(data, fh, indent=1, sort_keys=True)
+            os.replace(tmp, self.path)
+        return {'favourite': bool(entry.get('favourite')), 'stars': int(entry.get('stars') or 0)}
+
+
+# --- Filters and paging --------------------------------------------------------
+
+ALL_MODELS = 'All models'
+ALL_DAYS = 'All days'
+
+
+def filter_choices(items: list):
+    """(model choices, day choices) for the filter dropdowns."""
+    models = sorted({str(i.metadata.get('base_model')) for i in items if i.metadata.get('base_model')})
+    days = sorted({i.date for i in items}, reverse=True)
+    return [ALL_MODELS] + models, [ALL_DAYS] + days
+
+
+def filter_items(items: list, model=None, day=None, favourites_only=False, min_stars=0, ratings=None) -> list:
+    ratings = ratings or {}
+    out = []
+    for item in items:
+        if model and model != ALL_MODELS and str(item.metadata.get('base_model')) != model:
+            continue
+        if day and day != ALL_DAYS and item.date != day:
+            continue
+        if favourites_only or min_stars:
+            entry = ratings.get(RatingsStore.key(item.path)) or {}
+            if favourites_only and not entry.get('favourite'):
+                continue
+            if min_stars and int(entry.get('stars') or 0) < min_stars:
+                continue
+        out.append(item)
+    return out
+
+
+def caption(item, rating: dict | None) -> str:
+    rating = rating or {}
+    marks = ('\u2665 ' if rating.get('favourite') else '') + ('\u2605' * int(rating.get('stars') or 0))
+    text = f"{item.date} \u00b7 seed {item.metadata.get('seed', '?')}"
+    return f'{marks} {text}'.strip() if marks else text
