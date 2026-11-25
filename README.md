@@ -61,10 +61,36 @@ See [`docs/apple-silicon.md`](./docs/apple-silicon.md).
   `modules/core.py`; NumPy has no native bfloat16 support, so both the
   live preview and the final image decode crashed with
   `TypeError: Got unsupported ScalarType BFloat16` on Apple Silicon.
-- Removed the `FOOOCUS_TORCH_COMPILE` option from PR #11 and its startup
-  hint: it never took effect (samplers don't call the compiled object),
-  and compiling the UNet itself fails on MPS today. See
-  `docs/apple-silicon.md`.
+- **PR #22** — HTML-escape prompts and metadata in the History Log
+  (`log.html`), closing a stored-XSS hole; `unittest discover` works again.
+- **PR #23** — Loading settings from an A1111/Civitai image keeps its
+  prompt and infers Performance from the step count; metadata tests.
+- **PR #24** — Document why the generation worker's catch-all must stay
+  broad (`except BaseException`).
+- **PR #25** — Ignore `.claude/` local state.
+- **PR #26** — Read the version with `ast` instead of `exec()`.
+- **PR #27** — Tests for config loading and precedence (default preset <
+  `config.txt` < `--preset` < env var).
+- **PR #28** — Run the UNet natively in bf16 on M4+ instead of up-casting
+  every layer to fp32: ~2.5x faster per SDXL image (0.9 s vs 2.7 s per
+  step on an M5 Pro). `FOOOCUS_MPS_FP32_COMPUTE=1` restores the old path.
+- **PR #29** — Prompt queue: one generation per prompt line.
+- **PR #30** — History tab: browse, search and reuse past generations.
+- **PR #31** — Model manager: list installed models and download
+  `.safetensors` by URL with progress and checksum verification.
+- **PR #32** — Draft mode: 12-step DPM++ 2M previews (~2.5x faster), then
+  "Render full quality" for the one you pick.
+- **PR #33** — Auto-apply the best settings for the selected checkpoint,
+  based on the shipped presets and the model's family.
+- **PR #34** — `scripts/auto_upscale.py` and `Upscale Images.command`:
+  detailed 2x upscales of finished images while the app is closed.
+- **PR #35** — FLUX.1 [schnell] (Q4 GGUF) text-to-image as a base model;
+  download the files with `scripts/download_flux.py`.
+- **PR #36** — Removed the `FOOOCUS_TORCH_COMPILE` option from PR #11 and
+  its startup hint: it never took effect, and compiling the UNet itself
+  fails on MPS today. See `docs/apple-silicon.md`.
+- **PR #37** — Ignore `*.gguf` models and the model downloader's sidecar
+  files.
 
 ## Upstream README
 
