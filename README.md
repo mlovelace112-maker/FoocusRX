@@ -25,6 +25,52 @@ If you already have the repo cloned:
 On M4 or newer, the launcher auto-installs `mtlflashattn` on first run.
 See [`docs/apple-silicon.md`](./docs/apple-silicon.md).
 
+### FoocusRX app (Dock launcher)
+
+```bash
+venv/bin/python scripts/foocusrx.py build-app --install   # -> ~/Applications/FoocusRX.app
+```
+
+Drag **FoocusRX** from `~/Applications` to the Dock. Clicking it starts
+FoocusRX in the background (port 7865) and opens it in your browser; clicking
+it again while it runs offers **Open / Stop / Update / View log**. Logs go to
+`~/Library/Logs/FoocusRX/`. If an update is needed (packages don't match
+`requirements_versions.txt`) it offers to run the update instead of
+installing silently. From a terminal: `scripts/foocusrx.py start|stop|status|log`.
+
+### Updating
+
+Double-click **Update FoocusRX.command** (or `scripts/foocusrx.py update`).
+It fetches `origin/main`, fast-forwards, installs changed packages, then runs
+the unit tests and a smoke launch (the app must start and report the pinned
+Gradio version). If anything fails, the code (`git reset --keep`) and the
+virtualenv (restored from an instant APFS copy) go back to where they were.
+It only fast-forwards, never discards local changes (your files under
+`models/` are fine), and keeps one `venv.bak-*` (`scripts/foocusrx.py
+prune-backups --keep 0` removes it). `--check` reports without changing
+anything; `--e2e` also runs the browser tests.
+
+### Upgrading dependencies
+
+Double-click **Upgrade Dependencies.command**, or:
+
+```bash
+scripts/foocusrx.py upgrade check                   # newer versions of the pinned packages
+scripts/foocusrx.py upgrade test gradio==5.50.0     # try it in venv-candidate (your venv is untouched)
+scripts/foocusrx.py upgrade apply [--dry-run]       # pull request with the new pins
+scripts/foocusrx.py update                          # after merging: swaps the tested venv-candidate in
+```
+
+`test` clones the virtualenv, installs the versions there, and runs the unit
+tests plus a smoke launch against the copy. torch/torchvision are not pinned
+in `requirements_versions.txt` and are out of scope.
+
+### Login when sharing on a network
+
+With `--listen` on a non-loopback address or `--share`, add a login: copy
+`auth-example.json` to `auth.json` and set your own user and password. Without
+one, History delete and model downloads are disabled.
+
 ## What's different from upstream
 
 - **PR #5** — Removed global SSL bypass in `launch.py`; pinned the
