@@ -81,6 +81,7 @@ def generate_clicked(task: worker.AsyncTask):
 
     with model_management.interrupt_processing_mutex:
         model_management.interrupt_processing = False
+    modules.prompt_rewriter.release()  # don't keep ~3 GB next to the image model
     # outputs=[progress_html, progress_window, progress_gallery, gallery]
 
     if len(task.args) == 0:

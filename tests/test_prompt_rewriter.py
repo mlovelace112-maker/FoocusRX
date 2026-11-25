@@ -67,6 +67,40 @@ class TestAvailability(unittest.TestCase):
             pr.rewrite('a fox', 'sdxl', base='/nope')
 
 
+class TestKeepAlive(unittest.TestCase):
+    def tearDown(self):
+        pr._cache.clear()
+
+    def test_release_cancels_timer_and_frees(self):
+        import threading
+        freed = threading.Event()
+        pr._cache.update(key=('d', 'cpu', 'f32'), model=object(), tokenizer=object(), device='cpu')
+        self.assertTrue(pr.is_loaded())
+        old_keep = pr.KEEP_ALIVE
+        pr.KEEP_ALIVE = 30
+        try:
+            pr._schedule_release()
+            timer = pr._cache['timer']
+            self.assertTrue(timer.is_alive())
+            self.assertTrue(pr.release())
+            self.assertFalse(pr.is_loaded())
+            timer.join(1)
+            self.assertFalse(timer.is_alive())  # cancelled
+            self.assertFalse(pr.release())      # already free
+        finally:
+            pr.KEEP_ALIVE = old_keep
+
+    def test_keep_alive_zero_frees_immediately(self):
+        pr._cache.update(key=('d', 'cpu', 'f32'), model=object(), tokenizer=object(), device='cpu')
+        old_keep = pr.KEEP_ALIVE
+        pr.KEEP_ALIVE = 0
+        try:
+            pr._schedule_release()
+            self.assertFalse(pr.is_loaded())
+        finally:
+            pr.KEEP_ALIVE = old_keep
+
+
 @unittest.skipUnless(REAL_BASE and pr.available(REAL_BASE), 'prompt model not available')
 class TestRealModel(unittest.TestCase):
     def test_rewrites_in_each_style(self):

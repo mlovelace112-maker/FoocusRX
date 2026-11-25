@@ -260,14 +260,21 @@ def worker():
     pid = os.getpid()
     print(f'Started worker with PID {pid}')
 
-    try:
-        async_gradio_app = shared.gradio_root
-        flag = f'''App started successful. Use the app with {str(async_gradio_app.local_url)} or {str(async_gradio_app.server_name)}:{str(async_gradio_app.server_port)}'''
-        if async_gradio_app.share:
-            flag += f''' or {async_gradio_app.share_url}'''
-        print(flag)
-    except Exception as e:
-        print(e)
+    def announce_when_ready():
+        # This used to print right away and only worked because loading SDXL
+        # at import delayed it until Gradio was up; models now load on first
+        # use, so wait for the server instead.
+        for _ in range(600):
+            app = getattr(shared, 'gradio_root', None)
+            if app is not None and getattr(app, 'local_url', None):
+                flag = f'''App started successful. Use the app with {str(app.local_url)} or {str(app.server_name)}:{str(app.server_port)}'''
+                if app.share:
+                    flag += f''' or {app.share_url}'''
+                print(flag)
+                return
+            time.sleep(0.2)
+
+    threading.Thread(target=announce_when_ready, daemon=True).start()
 
     def progressbar(async_task, number, text):
         print(f'[Fooocus] {text}')
@@ -1343,6 +1350,9 @@ def worker():
         progressbar(async_task, current_progress, 'Initializing ...')
 
         loras = async_task.loras
+        if skip_prompt_processing:  # e.g. Upscale (Fast) / enhance-only: models may not be loaded yet
+            pipeline.ensure_loaded(async_task.base_model_name, async_task.refiner_model_name, async_task.loras,
+                                   async_task.vae_name)
         if not skip_prompt_processing:
             tasks, use_expansion, loras, current_progress = process_prompt(async_task, async_task.prompt, async_task.negative_prompt,
                                                          base_model_additional_loras, async_task.image_number,
