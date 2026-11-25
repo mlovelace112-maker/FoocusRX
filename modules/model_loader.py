@@ -125,6 +125,7 @@ def _download_with_resume(
     expected_size: Optional[int] = None,
     progress: bool = True,
     chunk_size: int = 1 << 20,  # 1 MiB
+    progress_callback=None,
 ) -> None:
     """Download ``url`` into ``partial_file``, resuming an interrupted
     ``.partial`` when possible.
@@ -139,6 +140,8 @@ def _download_with_resume(
       from byte 0.
     * Progress bar reflects the true cumulative position when resuming.
     * Set ``FOOOCUS_DOWNLOAD_RESUME=0`` to disable resume entirely.
+    * ``progress_callback(done_bytes, total_bytes_or_None)``, if given, is
+      called after every chunk (used by the UI's model manager).
 
     Raises on unrecoverable network errors after resume fallback.
     """
@@ -215,6 +218,9 @@ def _download_with_resume(
                     total = None
 
             bar = _tqdm_bar(total, existing_bytes, os.path.basename(partial_file)) if progress else None
+            done = existing_bytes
+            if progress_callback is not None:
+                progress_callback(done, total)
             try:
                 with open(partial_file, open_mode) as out:
                     while True:
@@ -222,8 +228,11 @@ def _download_with_resume(
                         if not chunk:
                             break
                         out.write(chunk)
+                        done += len(chunk)
                         if bar is not None:
                             bar.update(len(chunk))
+                        if progress_callback is not None:
+                            progress_callback(done, total)
             finally:
                 if bar is not None:
                     bar.close()
@@ -236,7 +245,7 @@ def _download_with_resume(
             )
             _remove_partial(partial_file)
             return _download_with_resume(
-                url, partial_file, expected_size, progress, chunk_size
+                url, partial_file, expected_size, progress, chunk_size, progress_callback
             )
         raise
 
@@ -249,6 +258,7 @@ def load_file_from_url(
         file_name: Optional[str] = None,
         expected_sha256: Optional[str] = None,
         expected_size: Optional[int] = None,
+        progress_callback=None,
 ) -> str:
     """Download a file from ``url`` into ``model_dir``, using the existing
     file if it looks intact.
@@ -362,7 +372,8 @@ def load_file_from_url(
     # for us.
     print(f'Downloading: "{url}" to {cached_file}')
     _download_with_resume(
-        url, partial_file, expected_size=expected_size, progress=progress
+        url, partial_file, expected_size=expected_size, progress=progress,
+        progress_callback=progress_callback,
     )
 
     err = _validate(partial_file)
@@ -387,6 +398,15 @@ def load_file_from_url(
     # Windows (Python 3.3+), which prevents a partial file from ever being
     # visible under its final name.
     os.replace(partial_file, cached_file)
+    # _validate() stamped the .partial; move the stamp with the file so the
+    # next launch trusts it instead of re-hashing, and no orphan
+    # "<name>.partial.sha256.ok" is left behind. os.replace keeps the mtime
+    # the stamp recorded.
+    if os.path.exists(_stamp_path(partial_file)):
+        try:
+            os.replace(_stamp_path(partial_file), _stamp_path(cached_file))
+        except OSError:
+            pass
     # Clean up the .meta sidecar now that the .partial is gone.
     try:
         os.remove(_partial_meta_path(partial_file))

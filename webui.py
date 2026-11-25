@@ -15,6 +15,8 @@ from modules import gradio_compat as gc
 import modules.style_sorter as style_sorter
 import modules.meta_parser
 import modules.history
+import modules.model_manager
+import threading
 import args_manager
 import copy
 import launch
@@ -698,6 +700,26 @@ with shared.gradio_root:
 
                 with gr.Row():
                     refresh_files = gr.Button(value='\U0001f504 Refresh All Files', variant='secondary', elem_classes='refresh_button')
+
+                with gr.Accordion(label='Model manager', open=False):
+                    # A callable value is re-evaluated on every page load.
+                    model_manager_table = gr.Dataframe(value=lambda: modules.model_manager.list_installed(
+                                                           modules.model_manager.default_dirs()),
+                                                       headers=['Type', 'File', 'Size', 'Modified'],
+                                                       datatype=['str', 'str', 'str', 'str'],
+                                                       interactive=False, wrap=True)
+                    model_manager_list_refresh = gr.Button(value='\U0001f504 Refresh list', variant='secondary',
+                                                           elem_classes='refresh_button')
+                    gr.Markdown('**Download a model** (.safetensors only)')
+                    model_download_url = gr.Textbox(label='URL', placeholder='https://…/model.safetensors')
+                    with gr.Row():
+                        model_download_kind = gr.Dropdown(label='Type', choices=list(modules.model_manager.KINDS),
+                                                          value='LoRA', scale=1)
+                        model_download_name = gr.Textbox(label='Save as (optional)', placeholder='name.safetensors',
+                                                         scale=2)
+                    model_download_sha = gr.Textbox(label='SHA-256 (optional, verifies the download)')
+                    model_download_button = gr.Button(value='Download', variant='primary')
+                    model_download_status = gr.Textbox(label='Status', interactive=False, lines=2)
             with gr.Tab(label='Advanced'):
                 guidance_scale = gr.Slider(label='Guidance Scale', minimum=1.0, maximum=30.0, step=0.01,
                                            value=modules.config.default_cfg_scale,
@@ -898,6 +920,47 @@ with shared.gradio_root:
                     refresh_files_output += [preset_selection]
                 refresh_files.click(refresh_files_clicked, [], refresh_files_output + lora_ctrls,
                                     queue=False, show_progress=False)
+
+                def model_manager_list():
+                    return modules.model_manager.list_installed(modules.model_manager.default_dirs())
+
+                def model_download_clicked(url, kind, name, sha):
+                    try:
+                        request = modules.model_manager.prepare_download(
+                            url, kind, name, sha, modules.model_manager.default_dirs())
+                    except ValueError as exc:
+                        yield f'Not started: {exc}'
+                        return
+                    state = {'done': 0, 'total': None, 'path': None, 'error': None}
+
+                    def on_progress(done, total):
+                        state['done'], state['total'] = done, total
+
+                    def run():
+                        try:
+                            state['path'] = modules.model_manager.download(request, on_progress)
+                        except Exception as exc:  # shown to the user below
+                            state['error'] = str(exc)
+
+                    thread = threading.Thread(target=run, daemon=True)
+                    thread.start()
+                    yield f'Starting download of {request.file_name} …'
+                    while thread.is_alive():
+                        thread.join(timeout=0.5)
+                        yield modules.model_manager.progress_text(request.file_name, state['done'], state['total'])
+                    if state['error']:
+                        yield f'Failed: {state["error"]}'
+                    else:
+                        yield f'Installed {request.file_name} ({request.kind}) in {request.model_dir}'
+
+                model_manager_list_refresh.click(model_manager_list, outputs=model_manager_table,
+                                                 queue=False, show_progress=False)
+                model_download_button.click(
+                    model_download_clicked,
+                    inputs=[model_download_url, model_download_kind, model_download_name, model_download_sha],
+                    outputs=model_download_status) \
+                    .then(refresh_files_clicked, [], refresh_files_output + lora_ctrls, queue=False, show_progress=False) \
+                    .then(model_manager_list, outputs=model_manager_table, queue=False, show_progress=False)
 
             with gr.Tab(label='History') as history_tab:
                 with gr.Row():
