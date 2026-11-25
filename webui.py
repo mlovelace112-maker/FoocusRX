@@ -17,6 +17,7 @@ import modules.meta_parser
 import modules.prompt_rewriter
 import modules.prompt_library
 import modules.ui_family
+import modules.security
 import modules.ui_theme
 import modules.draft_mode
 import modules.model_profiles
@@ -43,6 +44,14 @@ history_index = modules.history.HistoryIndex()
 def refiner_choices():
     """Refiners must be SDXL/SD1.5 checkpoints; FLUX.1 can't refine."""
     return ['None'] + [m for m in modules.config.model_filenames if not modules.flux.app.is_flux(m)]
+
+# Delete / model download are off when the app is reachable without a login.
+FILE_ACTIONS_LOCKED = modules.security.file_actions_locked(args_manager.args.listen, args_manager.args.share,
+                                                           auth_enabled)
+_security_warning = modules.security.startup_warning(args_manager.args.listen, args_manager.args.share,
+                                                     auth_enabled)
+if _security_warning:
+    print(_security_warning)
 
 HISTORY_PAGE = 48  # History tab: images per page ("Load more" adds another page)
 HISTORY_STAR_CHOICES = ['Any rating', '\u2605 1+', '\u2605 2+', '\u2605 3+', '\u2605 4+', '\u2605 5']
@@ -835,7 +844,10 @@ with shared.gradio_root:
                         model_download_name = gr.Textbox(label='Save as (optional)', placeholder='name.safetensors',
                                                          scale=2)
                     model_download_sha = gr.Textbox(label='SHA-256 (optional, verifies the download)')
-                    model_download_button = gr.Button(value='Download', variant='primary')
+                    model_download_button = gr.Button(value='Download', variant='primary',
+                                                      interactive=not FILE_ACTIONS_LOCKED)
+                    if FILE_ACTIONS_LOCKED:
+                        gr.Markdown(modules.security.LOCKED_MESSAGE, elem_classes='rx-notice')
                     model_download_status = gr.Textbox(label='Status', interactive=False, lines=2)
             with gr.Tab(label='Advanced'):
                 with gr.Column(visible=initial_family != modules.ui_family.FLUX) as sdxl_guidance_col:
@@ -1043,6 +1055,9 @@ with shared.gradio_root:
                     return modules.model_manager.list_installed(modules.model_manager.default_dirs())
 
                 def model_download_clicked(url, kind, name, sha):
+                    if FILE_ACTIONS_LOCKED:  # enforced here too, not only by the disabled button
+                        yield modules.security.LOCKED_MESSAGE
+                        return
                     try:
                         request = modules.model_manager.prepare_download(
                             url, kind, name, sha, modules.model_manager.default_dirs())
@@ -1131,7 +1146,9 @@ with shared.gradio_root:
                 history_limit = gr.State(HISTORY_PAGE)
 
                 def history_selection_view(marked, item):
-                    if marked:
+                    if FILE_ACTIONS_LOCKED:
+                        delete = gr.update(value='\U0001f5d1 Delete (disabled: no login)', interactive=False)
+                    elif marked:
                         delete = gr.update(value=f'\U0001f5d1 Delete {len(marked)} selected', interactive=True)
                     elif item is not None:
                         delete = gr.update(value='\U0001f5d1 Delete this image', interactive=True)
@@ -1191,6 +1208,10 @@ with shared.gradio_root:
                     return history_selection_view(marked, item)
 
                 def history_delete_clicked(marked, item, *refresh_args):
+                    if FILE_ACTIONS_LOCKED:
+                        query, _marked, *filters = refresh_args
+                        return history_refresh_clicked(query, marked, *filters) + \
+                            [modules.security.LOCKED_MESSAGE, gr.update(interactive=False), []]
                     paths = list(marked) if marked else ([item.path] if item is not None else [])
                     moves, skipped = modules.history.delete_items(
                         paths, modules.config.path_outputs,
