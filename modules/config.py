@@ -202,6 +202,7 @@ path_wildcards = get_dir_or_set_default('path_wildcards', '../wildcards/')
 path_safety_checker = get_dir_or_set_default('path_safety_checker', '../models/safety_checker/')
 path_sam = get_dir_or_set_default('path_sam', '../models/sam/')
 path_flux = get_dir_or_set_default('path_flux', '../models/flux/')  # FLUX.1 schnell (modules/flux)
+path_prompt_model = get_dir_or_set_default('path_prompt_model', '../models/llm/')  # AI prompt rewriter
 path_outputs = get_path_output()
 
 
