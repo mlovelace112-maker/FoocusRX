@@ -584,6 +584,9 @@ with shared.gradio_root:
                     shared.gradio_root.load(lambda x: None, inputs=aspect_ratios_selection, queue=False, show_progress=False, **gc.js_kwarg('(x)=>{refresh_aspect_ratios_label(x);}'))
 
                 image_number = gr.Slider(label='Image Number', minimum=1, maximum=modules.config.default_max_image_number, step=1, value=modules.config.default_image_number)
+                prompt_queue = gr.Checkbox(label='Prompt queue (one prompt per line)', value=False,
+                                           info='Each non-empty prompt line becomes its own generation, '
+                                                'with the settings and Image Number above.')
 
                 output_format = gr.Radio(label='Output Format',
                                          choices=flags.OutputFormat.list(),
@@ -1011,6 +1014,7 @@ with shared.gradio_root:
                   enhance_input_image, enhance_checkbox, enhance_uov_method, enhance_uov_processing_order,
                   enhance_uov_prompt_type]
         ctrls += enhance_ctrls
+        ctrls += [prompt_queue]  # must stay last: AsyncTask reads it after the enhance controls
 
         def parse_meta(raw_prompt_txt, is_generating):
             loaded_json = None

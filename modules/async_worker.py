@@ -3,6 +3,7 @@ import threading
 from extras.inpaint_mask import generate_mask_from_image, SAMOptions
 from modules import gradio_compat as gc
 from modules.patch import PatchSettings, patch_settings, patch_all
+from modules.prompt_queue import split_prompt_queue, queue_progress_title
 import modules.config
 
 patch_all()
@@ -16,6 +17,7 @@ class AsyncTask:
         import args_manager
 
         self.args = args.copy()
+        self.parent = None  # set on prompt-queue child tasks; see make_queue_child
         self.yields = []
         self.results = []
         self.last_stop = False
@@ -155,9 +157,39 @@ class AsyncTask:
                     enhance_inpaint_erode_or_dilate,
                     enhance_mask_invert
                 ])
+        # Appended after the enhance controls; absent when a caller builds a
+        # task without it, so default to off.
+        self.prompt_queue = bool(args.pop()) if args else False
+
         self.should_enhance = self.enhance_checkbox and (self.enhance_uov_method != disabled.casefold() or len(self.enhance_ctrls) > 0)
         self.images_to_enhance_count = 0
         self.enhance_stats = {}
+
+    # Stop/Skip in webui.py set last_stop on the task the UI holds. A
+    # prompt-queue child forwards reads and writes to that parent so the
+    # buttons keep working while a child is generating.
+    @property
+    def last_stop(self):
+        return self.parent.last_stop if self.parent is not None else self._last_stop
+
+    @last_stop.setter
+    def last_stop(self, value):
+        if self.parent is not None:
+            self.parent.last_stop = value
+        else:
+            self._last_stop = value
+
+    def make_queue_child(self, prompt):
+        """A fresh task for one prompt-queue line, built from this task's
+        original inputs. The handler mutates the task it runs (styles,
+        LoRAs, prompt), so each line needs its own instance."""
+        args = list(self.args)
+        args[1] = prompt  # args[0] is generate_image_grid, args[1] is the prompt
+        child = AsyncTask(args=args)
+        child.parent = self
+        child.yields = self.yields      # previews and results reach the same UI stream
+        child.results = self.results    # so the gallery accumulates across prompts
+        return child
 
 class _AsyncTaskList(list):
     """A list that signals a threading.Event whenever an item is appended.
@@ -1491,6 +1523,21 @@ def worker():
         stop_processing(async_task, processing_start_time)
         return
 
+    def run_prompt_queue(task: AsyncTask, prompts: list[str]):
+        """Run the handler once per prompt line, each on its own child task.
+        Stop ends the whole queue; Skip skips the current image as usual."""
+        task.processing = True  # stop_clicked only interrupts while processing
+        try:
+            for index, prompt in enumerate(prompts, start=1):
+                if task.last_stop == 'stop':
+                    break
+                child = task.make_queue_child(prompt)
+                task.yields.append(['preview', (1, queue_progress_title(index, len(prompts), prompt), None)])
+                handler(child)
+                task.results = child.results
+        finally:
+            task.processing = False
+
     while True:
         # Block until a task is queued instead of polling every 10 ms.
         # webui.py calls ``async_tasks.append(...)`` which sets the event
@@ -1505,7 +1552,11 @@ def worker():
             async_tasks._ready.clear()
 
         try:
-            handler(task)
+            queued_prompts = split_prompt_queue(task.prompt) if getattr(task, 'prompt_queue', False) else []
+            if len(queued_prompts) > 1:
+                run_prompt_queue(task, queued_prompts)
+            else:
+                handler(task)
             if task.generate_image_grid:
                 build_image_wall(task)
             task.yields.append(['finish', task.results])
