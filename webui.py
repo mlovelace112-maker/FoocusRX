@@ -14,6 +14,7 @@ import modules.gradio_hijack as grh
 from modules import gradio_compat as gc
 import modules.style_sorter as style_sorter
 import modules.meta_parser
+import modules.history
 import args_manager
 import copy
 import launch
@@ -24,6 +25,10 @@ from modules.private_logger import get_current_html_path
 from modules.ui_gradio_extensions import reload_javascript
 from modules.auth import auth_enabled, check_auth
 from modules.util import is_json
+
+history_index = modules.history.HistoryIndex()
+HISTORY_LIMIT = 200  # newest matches shown in the History tab
+
 
 def get_task(*args):
     args = list(args)
@@ -891,6 +896,39 @@ with shared.gradio_root:
                 refresh_files.click(refresh_files_clicked, [], refresh_files_output + lora_ctrls,
                                     queue=False, show_progress=False)
 
+            with gr.Tab(label='History') as history_tab:
+                with gr.Row():
+                    history_query = gr.Textbox(label='Search', placeholder='Prompt, seed, model or style',
+                                               scale=4, container=False)
+                    history_refresh = gr.Button(value='\U0001f504 Refresh', variant='secondary',
+                                                elem_classes='refresh_button', scale=1)
+                history_gallery = gr.Gallery(show_label=False, columns=4, height=360, object_fit='contain',
+                                             allow_preview=False)
+                history_details = gr.Textbox(label='Selected image', lines=6, interactive=False)
+                history_load = gr.Button(value='Load these settings', interactive=False)
+                history_items = gr.State([])
+                history_selected = gr.State(None)
+
+                def history_refresh_clicked(query):
+                    items = modules.history.search(history_index.scan(modules.config.path_outputs), query)
+                    items = items[:HISTORY_LIMIT]
+                    gallery = [(item.path, f"{item.date} · seed {item.metadata.get('seed', '?')}") for item in items]
+                    return gallery, items, None, '', gr.update(interactive=False)
+
+                def history_select(items, evt: gr.SelectData):
+                    if not items or evt.index is None or evt.index >= len(items):
+                        return None, '', gr.update(interactive=False)
+                    item = items[evt.index]
+                    return item, modules.history.describe(item), gr.update(interactive=item.source != 'none')
+
+                history_refresh_outputs = [history_gallery, history_items, history_selected, history_details, history_load]
+                for trigger in (history_refresh.click, history_query.submit, history_tab.select):
+                    trigger(history_refresh_clicked, inputs=history_query, outputs=history_refresh_outputs,
+                            queue=False, show_progress=False)
+                history_gallery.select(history_select, inputs=history_items,
+                                       outputs=[history_selected, history_details, history_load],
+                                       queue=False, show_progress=False)
+
         state_is_generating = gr.State(False)
 
         load_data_outputs = [advanced_checkbox, image_number, prompt, negative_prompt, style_selections,
@@ -1041,6 +1079,18 @@ with shared.gradio_root:
             return modules.meta_parser.load_parameter_button_click(parsed_parameters, state_is_generating, inpaint_mode)
 
         metadata_import_button.click(trigger_metadata_import, inputs=[metadata_input_image, state_is_generating], outputs=load_data_outputs, queue=False, show_progress=True) \
+            .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
+
+        def history_load_clicked(item, is_generating):
+            if item is None:
+                return [gr.update()] * len(load_data_outputs)
+            params = modules.history.to_load_parameters(
+                item.metadata, modules.config.model_filenames, modules.config.lora_filenames,
+                modules.config.vae_filenames)
+            return modules.meta_parser.load_parameter_button_click(params, is_generating, inpaint_mode)
+
+        history_load.click(history_load_clicked, inputs=[history_selected, state_is_generating],
+                           outputs=load_data_outputs, queue=False, show_progress=True) \
             .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
 
         generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True),
