@@ -15,6 +15,8 @@ from modules import gradio_compat as gc
 import modules.style_sorter as style_sorter
 import modules.meta_parser
 import modules.prompt_rewriter
+import modules.ui_family
+import modules.ui_theme
 import modules.draft_mode
 import modules.model_profiles
 import modules.util
@@ -187,21 +189,22 @@ title = f'Fooocus {fooocus_version.version}'
 if isinstance(args_manager.args.preset, str):
     title += ' ' + args_manager.args.preset
 
-shared.gradio_root = gr.Blocks(title=title).queue()
+shared.gradio_root = gr.Blocks(title=title, theme=modules.ui_theme.build_theme()).queue()
 
 with shared.gradio_root:
     currentTask = gr.State(worker.AsyncTask(args=[]))
     inpaint_engine_state = gr.State('empty')
-    with gr.Row():
-        with gr.Column(scale=2):
+    gr.HTML(modules.ui_theme.header_html(title.replace('Fooocus', 'FoocusRX', 1)), elem_id='rx_header')
+    with gr.Row(elem_id='rx_main'):
+        with gr.Column(scale=2, elem_id='rx_left'):
             with gr.Row():
-                progress_window = gr.Image(label='Preview', show_label=True, visible=False, height=768,
+                progress_window = gr.Image(label='Preview', show_label=True, visible=False, height=640,
                                             elem_classes=['main_view'])
                 progress_gallery = gr.Gallery(label='Finished Images', show_label=True, object_fit='contain',
-                                              height=768, visible=False, elem_classes=['main_view', 'image_gallery'])
+                                              height=640, visible=False, elem_classes=['main_view', 'image_gallery'])
             progress_html = gr.HTML(value=modules.html.make_progress_html(32, 'Progress 32%'), visible=False,
                                     elem_id='progress-bar', elem_classes='progress-bar')
-            gallery = gr.Gallery(label='Gallery', show_label=False, object_fit='contain', visible=True, height=768,
+            gallery = gr.Gallery(label='Gallery', show_label=False, object_fit='contain', visible=True, height=640,
                                  elem_classes=['resizable_area', 'main_view', 'final_gallery', 'image_gallery'],
                                  elem_id='final_gallery')
             with gr.Row():
@@ -213,11 +216,14 @@ with shared.gradio_root:
                     if isinstance(default_prompt, str) and default_prompt != '':
                         shared.gradio_root.load(lambda: default_prompt, outputs=prompt)
 
-                    with gr.Row():
+                    with gr.Row(elem_classes='rx-toolbar'):
                         rewrite_button = gr.Button(value='✨ Rewrite prompt', size='sm', variant='secondary',
                                                    elem_id='rewrite_prompt_button', min_width=0)
                         rewrite_undo = gr.Button(value='↩ Undo rewrite', size='sm', variant='secondary',
                                                  interactive=False, min_width=0)
+                        render_full_button = gr.Button(value='⬆ Render full quality', size='sm',
+                                                       variant='secondary', min_width=0,
+                                                       elem_id='render_full_button')
                     prompt_before_rewrite = gr.State(None)
 
                 with gr.Column(scale=3, min_width=0):
@@ -225,7 +231,7 @@ with shared.gradio_root:
                     # Button — the visible text is `value`. Keeping both used
                     # to be a no-op silently absorbed via **kwargs; Gradio 4's
                     # @component_meta wrapper now raises TypeError.
-                    generate_button = gr.Button(value="Generate", elem_classes='type_row', elem_id='generate_button', visible=True)
+                    generate_button = gr.Button(value="Generate", elem_classes='type_row', elem_id='generate_button', visible=True, variant='primary')
                     reset_button = gr.Button(value="Reconnect", elem_classes='type_row', elem_id='reset_button', visible=False)
                     load_parameter_button = gr.Button(value="Load Parameters", elem_classes='type_row', elem_id='load_parameter_button', visible=False)
                     skip_button = gr.Button(value="Skip", elem_classes='type_row_half', elem_id='skip_button', visible=False)
@@ -247,6 +253,24 @@ with shared.gradio_root:
 
                     stop_button.click(stop_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False, **gc.js_kwarg('cancelGenerateForever'))
                     skip_button.click(skip_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False)
+            initial_family = modules.ui_family.family_of(modules.config.default_base_model_name)
+            with gr.Row(elem_id='rx_model_bar'):
+                model_family = gr.Dropdown(label='Model family', choices=modules.ui_family.FAMILIES,
+                                           value=initial_family, scale=1, min_width=140,
+                                           elem_id='model_family')
+                base_model = gr.Dropdown(label='Base model',
+                                         choices=modules.ui_family.models_for(initial_family, modules.config.model_filenames),
+                                         value=modules.config.default_base_model_name, show_label=True, scale=3,
+                                         elem_id='base_model')
+            family_memory = gr.State(modules.ui_family.initial_memory(modules.config.default_base_model_name,
+                                                                      modules.config.model_filenames))
+            flux_notice = gr.Markdown(value=modules.ui_family.FLUX_NOTICE, elem_classes='rx-notice',
+                                      visible=initial_family == modules.ui_family.FLUX)
+            with gr.Accordion(label='Negative prompt', open=False, elem_id='negative_prompt_accordion',
+                              visible=initial_family != modules.ui_family.FLUX) as negative_prompt_accordion:
+                negative_prompt = gr.Textbox(show_label=False, placeholder='What you do not want to see',
+                                             lines=2, elem_id='negative_prompt', container=False,
+                                             value=modules.config.default_prompt_negative)
             with gr.Row(elem_classes='advanced_check_row'):
                 input_image_checkbox = gr.Checkbox(label='Input Image', value=modules.config.default_image_prompt_checkbox, container=False, elem_classes='min_check')
                 enhance_checkbox = gr.Checkbox(label='Enhance', value=modules.config.default_enhance_checkbox, container=False, elem_classes='min_check')
@@ -603,7 +627,7 @@ with shared.gradio_root:
             enhance_checkbox.change(lambda x: gr.update(visible=x), inputs=enhance_checkbox,
                                         outputs=enhance_input_panel, queue=False, show_progress=False, **gc.js_kwarg(switch_js))
 
-        with gr.Column(scale=1, visible=modules.config.default_advanced_checkbox) as advanced_column:
+        with gr.Column(scale=1, visible=modules.config.default_advanced_checkbox, elem_id='rx_panel') as advanced_column:
             with gr.Tab(label='Settings'):
                 if not args_manager.args.disable_preset_selection:
                     preset_selection = gr.Dropdown(label='Preset',
@@ -627,19 +651,16 @@ with shared.gradio_root:
                     shared.gradio_root.load(lambda x: None, inputs=aspect_ratios_selection, queue=False, show_progress=False, **gc.js_kwarg('(x)=>{refresh_aspect_ratios_label(x);}'))
 
                 image_number = gr.Slider(label='Image Number', minimum=1, maximum=modules.config.default_max_image_number, step=1, value=modules.config.default_image_number)
-                prompt_queue = gr.Checkbox(label='Prompt queue (one prompt per line)', value=False,
-                                           info='Each non-empty prompt line becomes its own generation, '
-                                                'with the settings and Image Number above.')
-                auto_quality_prompts = gr.Checkbox(label='Auto quality prompts', value=True,
-                                                   info='Adds quality tags and a negative prompt suited to the '
-                                                        'selected model (Pony, anime, photo, FLUX…). Your prompt '
-                                                        'box is not changed; the additions are in the saved full prompt.')
-                draft_mode = gr.Checkbox(label='Draft mode (fast previews)', value=False,
-                                         info=f'{modules.draft_mode.DRAFT_STEPS}-step previews with the DPM++ 2M '
-                                              'sampler, about 2.5x faster. Click a draft in the gallery, then '
-                                              '"Render full quality". Not used with Extreme Speed, Lightning '
-                                              'or Hyper-SD.')
-                render_full_button = gr.Button(value='Render full quality', variant='secondary')
+                with gr.Group(elem_classes='rx-options'):
+                    auto_quality_prompts = gr.Checkbox(label='Auto quality prompts', value=True,
+                                                       info='Adds quality terms suited to the model. '
+                                                            'Your prompt box is not changed.')
+                    draft_mode = gr.Checkbox(label='Draft mode (fast previews)', value=False,
+                                             info=f'{modules.draft_mode.DRAFT_STEPS}-step drafts, ~2.5x faster. '
+                                                  'Pick one, then “Render full quality”.',
+                                             visible=initial_family != modules.ui_family.FLUX)
+                    prompt_queue = gr.Checkbox(label='Prompt queue', value=False,
+                                               info='Each prompt line becomes its own generation.')
                 draft_request = gr.State(None)       # {'mode': 'full', 'seed': int} for one run
                 gallery_selected_index = gr.State(None)
 
@@ -647,10 +668,6 @@ with shared.gradio_root:
                                          choices=flags.OutputFormat.list(),
                                          value=modules.config.default_output_format)
 
-                negative_prompt = gr.Textbox(label='Negative Prompt', show_label=True, placeholder="Type prompt here.",
-                                             info='Describing what you do not want to see.', lines=2,
-                                             elem_id='negative_prompt',
-                                             value=modules.config.default_prompt_negative)
                 seed_random = gr.Checkbox(label='Random', value=True)
                 image_seed = gr.Textbox(label='Seed', value=0, max_lines=1, visible=False) # workaround for https://github.com/gradio-app/gradio/issues/5354
 
@@ -716,15 +733,12 @@ with shared.gradio_root:
 
             with gr.Tab(label='Models'):
                 with gr.Group():
-                    with gr.Row():
-                        base_model = gr.Dropdown(label='Base Model (SDXL only)', choices=modules.config.model_filenames, value=modules.config.default_base_model_name, show_label=True)
-                        refiner_model = gr.Dropdown(label='Refiner (SDXL or SD 1.5)', choices=refiner_choices(), value=modules.config.default_refiner_model_name, show_label=True)
+                    auto_model_settings = gr.Checkbox(label='Auto-apply best settings for the selected model',
+                                                      value=True, container=False)
+                    auto_model_settings_status = gr.Markdown(value='', elem_classes='rx-status')
 
-                    flux_notice = gr.Textbox(value=modules.flux.app.UNSUPPORTED_NOTICE, show_label=False,
-                                             interactive=False, lines=3,
-                                             visible=modules.flux.app.is_flux(modules.config.default_base_model_name))
-                    base_model.change(lambda m: gr.update(visible=modules.flux.app.is_flux(m)), inputs=base_model,
-                                      outputs=flux_notice, queue=False, show_progress=False)
+                with gr.Column(visible=initial_family != modules.ui_family.FLUX) as refiner_col:
+                    refiner_model = gr.Dropdown(label='Refiner (SDXL or SD 1.5)', choices=refiner_choices(), value=modules.config.default_refiner_model_name, show_label=True)
 
                     refiner_switch = gr.Slider(label='Refiner Switch At', minimum=0.1, maximum=1.0, step=0.0001,
                                                info='Use 0.4 for SD1.5 realistic models; '
@@ -737,13 +751,8 @@ with shared.gradio_root:
                     refiner_model.change(lambda x: gr.update(visible=x != 'None'),
                                          inputs=refiner_model, outputs=refiner_switch, show_progress=False, queue=False)
 
-                    auto_model_settings = gr.Checkbox(label='Auto-apply best settings for the selected model',
-                                                      value=True, container=False)
-                    auto_model_settings_status = gr.Textbox(show_label=False, interactive=False, lines=2,
-                                                            placeholder='Pick a base model to apply its recommended '
-                                                                        'sampler, CFG, steps, resolution and VAE.')
-
-                with gr.Group():
+                with gr.Accordion(label='LoRAs', open=any(e and f != 'None' for e, f, _ in modules.config.default_loras),
+                                  visible=initial_family != modules.ui_family.FLUX) as lora_accordion:
                     lora_ctrls = []
 
                     for i, (enabled, filename, weight) in enumerate(modules.config.default_loras):
@@ -781,12 +790,13 @@ with shared.gradio_root:
                     model_download_button = gr.Button(value='Download', variant='primary')
                     model_download_status = gr.Textbox(label='Status', interactive=False, lines=2)
             with gr.Tab(label='Advanced'):
-                guidance_scale = gr.Slider(label='Guidance Scale', minimum=1.0, maximum=30.0, step=0.01,
-                                           value=modules.config.default_cfg_scale,
-                                           info='Higher value means style is cleaner, vivider, and more artistic.')
-                sharpness = gr.Slider(label='Image Sharpness', minimum=0.0, maximum=30.0, step=0.001,
-                                      value=modules.config.default_sample_sharpness,
-                                      info='Higher value means image and texture are sharper.')
+                with gr.Column(visible=initial_family != modules.ui_family.FLUX) as sdxl_guidance_col:
+                    guidance_scale = gr.Slider(label='Guidance Scale', minimum=1.0, maximum=30.0, step=0.01,
+                                               value=modules.config.default_cfg_scale,
+                                               info='Higher value means style is cleaner, vivider, and more artistic.')
+                    sharpness = gr.Slider(label='Image Sharpness', minimum=0.0, maximum=30.0, step=0.001,
+                                          value=modules.config.default_sample_sharpness,
+                                          info='Higher value means image and texture are sharper.')
                 gr.HTML('<a href="https://github.com/lllyasviel/Fooocus/discussions/117" target="_blank">\U0001F4D4 Documentation</a>')
                 dev_mode = gr.Checkbox(label='Developer Debug Mode', value=modules.config.default_developer_debug_mode_checkbox, container=False)
 
@@ -963,9 +973,9 @@ with shared.gradio_root:
                 dev_mode.change(dev_mode_checked, inputs=[dev_mode], outputs=[dev_tools],
                                 queue=False, show_progress=False)
 
-                def refresh_files_clicked():
+                def refresh_files_clicked(family):
                     modules.config.update_files()
-                    results = [gr.update(choices=modules.config.model_filenames)]
+                    results = [gr.update(choices=modules.ui_family.models_for(family, modules.config.model_filenames))]
                     results += [gr.update(choices=refiner_choices())]
                     results += [gr.update(choices=[flags.default_vae] + modules.config.vae_filenames)]
                     if not args_manager.args.disable_preset_selection:
@@ -978,7 +988,7 @@ with shared.gradio_root:
                 refresh_files_output = [base_model, refiner_model, vae_name]
                 if not args_manager.args.disable_preset_selection:
                     refresh_files_output += [preset_selection]
-                refresh_files.click(refresh_files_clicked, [], refresh_files_output + lora_ctrls,
+                refresh_files.click(refresh_files_clicked, [model_family], refresh_files_output + lora_ctrls,
                                     queue=False, show_progress=False)
 
                 def model_manager_list():
@@ -1019,7 +1029,7 @@ with shared.gradio_root:
                     model_download_clicked,
                     inputs=[model_download_url, model_download_kind, model_download_name, model_download_sha],
                     outputs=model_download_status) \
-                    .then(refresh_files_clicked, [], refresh_files_output + lora_ctrls, queue=False, show_progress=False) \
+                    .then(refresh_files_clicked, [model_family], refresh_files_output + lora_ctrls, queue=False, show_progress=False) \
                     .then(model_manager_list, outputs=model_manager_table, queue=False, show_progress=False)
 
             with gr.Tab(label='History') as history_tab:
@@ -1266,6 +1276,40 @@ with shared.gradio_root:
                          inputs=[base_model, auto_model_settings] + [profile_components[k] for k in profile_keys],
                          outputs=[profile_components[k] for k in profile_keys] + [auto_model_settings_status],
                          queue=False, show_progress=False)
+
+        # Model family switch. The family dropdown reacts to user picks only
+        # (.input); base_model.change follows every source (user, preset,
+        # History, loaded parameters) and keeps the family, the model list and
+        # the SDXL-only controls in step, without re-triggering itself.
+        sdxl_only = [negative_prompt_accordion, performance_selection, draft_mode, render_full_button,
+                     refiner_col, lora_accordion, sdxl_guidance_col]
+
+        def family_selected(family, memory):
+            family, choices, model, warning = modules.ui_family.select_family(
+                family, memory, modules.config.model_filenames)
+            if warning:
+                gr.Warning(warning)
+            if model is None:
+                return gr.update(value=family), gr.update()
+            return gr.update(value=family), gr.update(choices=choices, value=model)
+
+        model_family.input(family_selected, inputs=[model_family, family_memory],
+                           outputs=[model_family, base_model], queue=False, show_progress=False)
+
+        def base_model_changed(model, shown_family, memory):
+            family, memory, choices = modules.ui_family.model_changed(
+                model, shown_family, memory, modules.config.model_filenames)
+            sdxl = family != modules.ui_family.FLUX
+            # Untick Input Image / Enhance in FLUX mode so nothing stays on while hidden.
+            image_toggles = [gr.update(visible=True)] * 2 if sdxl else [gr.update(visible=False, value=False)] * 2
+            return ([gr.update(value=family), memory,
+                     gr.update() if choices is None else gr.update(choices=choices),
+                     gr.update(visible=not sdxl)] + image_toggles + [gr.update(visible=sdxl)] * len(sdxl_only))
+
+        base_model.change(base_model_changed, inputs=[base_model, model_family, family_memory],
+                          outputs=[model_family, family_memory, base_model, flux_notice,
+                                   input_image_checkbox, enhance_checkbox] + sdxl_only,
+                          queue=False, show_progress=False)
 
         def history_load_clicked(item, is_generating):
             if item is None:

@@ -48,9 +48,12 @@ def javascript_html():
 
 
 def css_html():
-    style_css_path = webpath('css/style.css')
-    head = f'<link rel="stylesheet" property="stylesheet" href="{style_css_path}">'
-    return head
+    # Inlined: Gradio 4's file= route serves .css as application/octet-stream,
+    # and browsers refuse a <link>ed stylesheet with that type, so none of
+    # style.css applied. Our own file, so no escaping beyond </style>.
+    with open(os.path.join(script_path, 'css', 'style.css'), encoding='utf-8') as f:
+        css = f.read().replace('</style', '<\\/style')
+    return f'<style id="foocusrx-style">\n{css}\n</style>'
 
 
 def reload_javascript():

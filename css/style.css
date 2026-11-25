@@ -416,3 +416,60 @@ div:has(> #positive_prompt) {
 #inpaint_brush_color input[type=color]{
   background: none;
 }
+/* ---------- FoocusRX redesign (modules/ui_theme.py sets the theme) ---------- */
+
+.gradio-container { max-width: 1680px !important; margin: 0 auto !important; }
+
+#rx_header { padding: 0 !important; border: none !important; background: none !important; box-shadow: none !important; }
+.rx-header { display: flex; align-items: center; gap: 12px; padding: 6px 4px 2px; }
+.rx-logo {
+  width: 36px; height: 36px; border-radius: 10px; flex: none;
+  display: grid; place-items: center; font-weight: 800; font-size: 14px; letter-spacing: .5px; color: #fff;
+  background: linear-gradient(135deg, var(--primary-500), var(--secondary-600));
+}
+.rx-title { font-size: 18px; font-weight: 700; line-height: 1.2; color: var(--body-text-color); }
+.rx-subtitle { font-size: 13px; color: var(--body-text-color-subdued); }
+
+/* Gallery: a calm, framed canvas instead of a large blank box */
+#final_gallery, .main_view {
+  border-radius: var(--radius-lg) !important;
+  background: var(--background-fill-secondary) !important;
+}
+
+/* Prompt + primary action */
+#positive_prompt textarea { font-size: 15px; line-height: 1.45; }
+#generate_button {
+  font-size: 17px !important; font-weight: 700 !important; letter-spacing: .2px;
+  background: linear-gradient(135deg, var(--primary-500), var(--secondary-600)) !important;
+  color: #fff !important; border: none !important;
+  box-shadow: 0 6px 18px -6px var(--primary-500) !important;
+}
+#generate_button:hover { filter: brightness(1.08); }
+#stop_button, #skip_button { font-weight: 600 !important; }
+
+.rx-toolbar { gap: 8px !important; flex-wrap: wrap !important; }
+.rx-toolbar button { flex: 0 0 auto !important; width: auto !important; }
+
+/* Model bar */
+#rx_model_bar { align-items: end; }
+.rx-notice { font-size: 13px; color: var(--body-text-color-subdued); padding: 2px 4px; }
+.rx-notice p { margin: 0 !important; }
+.rx-status { font-size: 13px; color: var(--body-text-color-subdued); min-height: 1em; }
+.rx-status p { margin: 4px 2px !important; }
+
+/* Option checkboxes: compact, help text on one line under the label */
+.rx-options .wrap { gap: 2px !important; }
+.rx-options [data-testid="block-info"] + div, .rx-options .info { font-size: 12px !important; }
+
+.advanced_check_row { width: auto !important; gap: 14px !important; }
+
+/* Right panel tabs: scrollable on narrow screens instead of wrapping */
+#rx_panel .tab-nav { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; }
+#rx_panel .tab-nav button { flex: none; }
+
+@media (max-width: 900px) {
+  #rx_main { flex-direction: column !important; }
+  #rx_main > div { width: 100% !important; min-width: 0 !important; flex: 1 1 auto !important; }
+  #final_gallery { height: 460px !important; }
+  .rx-subtitle { display: none; }
+}
