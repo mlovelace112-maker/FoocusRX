@@ -9,6 +9,11 @@ __pycache__
 *.corrupted
 *.partial
 *.onnx
+*.gguf
+# Sidecars written by modules/model_loader.py next to model files.
+*.sha256.ok
+*.partial.meta
+*.corrupt
 sorted_styles.json
 hash_cache.txt
 /input
