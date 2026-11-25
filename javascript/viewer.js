@@ -72,9 +72,15 @@ onUiLoaded(async () => {
         span.innerHTML = span.innerHTML.replace(/&lt;/g, '<').replace(/&gt;/g, '>');
     });
 
-    document.querySelector('.style_selections').addEventListener('focusout', function (event) {
+    // Delegated: Gradio 5 renders a tab's content only when it is first opened,
+    // so .style_selections may not exist yet when the UI loads.
+    document.addEventListener('focusout', function (event) {
+        const box = event.target.closest && event.target.closest('.style_selections');
+        if (!box) {
+            return;
+        }
         setTimeout(() => {
-            if (!this.contains(document.activeElement)) {
+            if (!box.contains(document.activeElement)) {
                 on_style_selection_blur();
             }
         }, 200);

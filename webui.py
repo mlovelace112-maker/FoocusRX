@@ -729,7 +729,7 @@ with shared.gradio_root:
                     if args_manager.args.disable_image_log:
                         return gr.update(value='')
 
-                    return gr.update(value=f'<a href="file={get_current_html_path(output_format)}" target="_blank">\U0001F4DA History Log</a>')
+                    return gr.update(value=f'<a href="{modules.ui_gradio_extensions.file_url(get_current_html_path(output_format))}" target="_blank">\U0001F4DA History Log</a>')
 
                 history_link = gr.HTML()
                 shared.gradio_root.load(update_history_link, outputs=history_link, queue=False, show_progress=False)
@@ -1653,6 +1653,20 @@ with shared.gradio_root:
                           outputs=[model_family, family_memory, base_model, flux_notice,
                                    input_image_checkbox, enhance_checkbox, ip_tab, inpaint_tab] + sdxl_only,
                           queue=False, show_progress=False)
+
+        # Gradio 5 ignores visibility updates on tabs, so also hide the Image
+        # Prompt / Inpaint tab buttons in FLUX mode with a page class + CSS
+        # (keyed by tab id, so translated labels don't matter; harmless on 4.x).
+        _flux_tab_ids = [str(ip_tab.id), str(inpaint_tab.id), str(ip_tab._id), str(inpaint_tab._id)]
+        _flux_tab_css = ', '.join(f'body.rx-flux button[data-tab-id="{i}"]' for i in _flux_tab_ids)
+        flux_class_js = ("(family) => { let s = document.getElementById('rx-flux-style'); if (!s) { "
+                         "s = document.createElement('style'); s.id = 'rx-flux-style'; "
+                         f"s.textContent = '{_flux_tab_css} {{ display: none !important; }}'; "
+                         "document.head.appendChild(s); } "
+                         "document.body.classList.toggle('rx-flux', family === 'FLUX.1'); return []; }")
+        model_family.change(None, inputs=model_family, queue=False, show_progress=False, **gc.js_kwarg(flux_class_js))
+        shared.gradio_root.load(None, inputs=model_family, queue=False, show_progress=False,
+                                **gc.js_kwarg(flux_class_js))
 
         def history_load_clicked(item, is_generating):
             if item is None:

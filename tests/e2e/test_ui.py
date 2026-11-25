@@ -34,7 +34,7 @@ MAIN_STATE = """(() => { const v = s => { const e = document.querySelector(s); r
           negative_visible: v('#negative_prompt_accordion'), render_full_visible: v('#render_full_button'),
           gallery_imgs: document.querySelectorAll('#final_gallery img').length,
           input_image_visible: [...document.querySelectorAll('label')].some(l => l.innerText.trim() === 'Input Image' && l.offsetParent !== null),
-          ip_tab_present: [...document.querySelectorAll('button[role=tab]')].some(b => b.innerText.trim() === 'Image Prompt')}; })()"""
+          ip_tab_present: [...document.querySelectorAll('button[role=tab]')].some(b => b.innerText.trim() === 'Image Prompt' && b.offsetParent !== null)}; })()"""
 
 
 def run(scenario, path=''):
@@ -80,9 +80,13 @@ class TestPage(unittest.TestCase):
         async def scenario(page):
             start = await page.js(MAIN_STATE)
             states = []
+            # Open the Input Image panel: Gradio 5 renders its tab buttons only once shown.
+            await page.click_label('Input Image')
+            await asyncio.sleep(1.0)
             if await page.pick_family('FLUX.1'):
                 states.append(await page.js(MAIN_STATE))
                 await page.pick_family('SDXL')
+                await asyncio.sleep(0.5)
                 states.append(await page.js(MAIN_STATE))
             return start, states, page.exceptions
         start, states, exceptions = run(scenario)
@@ -352,6 +356,37 @@ class TestGenerate(unittest.TestCase):
         await page.wait_for("(() => { const s=document.querySelector('#stop_button'); return s && s.offsetParent !== null; })()", timeout=60)
         return await page.wait_for("document.querySelector('#generate_button').offsetParent !== null && "
                                    "document.querySelectorAll('#final_gallery img').length > 0", timeout=timeout)
+
+    def test_inpaint_with_painted_mask(self):
+        """SDXL inpaint through the image editor: upload, paint a mask, generate."""
+        source = os.environ.get('FOOOCUS_E2E_INPAINT_IMAGE')
+        if not source and OUTPUTS:
+            images = sorted(glob.glob(os.path.join(OUTPUTS, '20*', '*.png')), key=os.path.getmtime)
+            source = images[-1] if images else None
+        if not source:
+            self.skipTest('set FOOOCUS_E2E_INPAINT_IMAGE or FOOOCUS_E2E_OUTPUTS')
+
+        async def scenario(page):
+            await page.pick_family('SDXL')
+            await set_textbox(page, '#positive_prompt textarea', 'a small red boat on the water')
+            await page.click_label('Input Image')
+            await asyncio.sleep(1.0)
+            await page.open_tab('Inpaint or Outpaint')
+            await asyncio.sleep(1.5)
+            uploaded = await page.upload('#inpaint_canvas input[type=file]', os.path.abspath(source))
+            await page.wait_for("!!document.querySelector('#inpaint_canvas canvas')", timeout=20)
+            await asyncio.sleep(2.0)
+            painted = await page.drag("[...document.querySelectorAll('#inpaint_canvas canvas')].pop()")
+            await asyncio.sleep(1.0)
+            finished = await self._generate(page)
+            state = await page.js(MAIN_STATE)
+            await shot(page, 'inpaint')
+            return uploaded, painted, finished, state, page.exceptions
+        uploaded, painted, finished, state, exceptions = run(scenario)
+        self.assertTrue(uploaded and painted)
+        self.assertTrue(finished, 'inpaint generation did not finish')
+        self.assertGreater(state['gallery_imgs'], 0)
+        self.assertEqual(exceptions, [])
 
     def test_flux_then_sdxl_draft_then_history_load(self):
         async def scenario(page):

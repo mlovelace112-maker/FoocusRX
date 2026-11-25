@@ -10,8 +10,9 @@ import ipaddress
 import os
 
 LOOPBACK_NAMES = {'localhost', 'localhost.localdomain', ''}
-LOCKED_MESSAGE = ('Disabled: the app is reachable from other machines without a login. Add an auth.json '
-                  '(see readme) or set FOOOCUS_ALLOW_REMOTE_FILE_ACTIONS=1.')
+LOCKED_MESSAGE = ('Disabled: the app is reachable from other machines without a login. Copy auth-example.json '
+                  'to auth.json, set your own user and password, and restart (or set '
+                  'FOOOCUS_ALLOW_REMOTE_FILE_ACTIONS=1).')
 
 
 def is_loopback(host) -> bool:
@@ -44,5 +45,6 @@ def startup_warning(listen, share, auth_enabled) -> str | None:
     where = 'a public Gradio share link' if share else f'--listen {listen}'
     return ('\n' + '!' * 78 + f'\n[Security] FoocusRX is reachable from other machines ({where}) without a login.\n'
             '[Security] Anyone who can open the page can generate images and read your outputs.\n'
-            '[Security] History delete and model downloads are disabled until you add auth.json\n'
+            '[Security] History delete and model downloads are disabled until you add a login:\n'
+            '[Security] copy auth-example.json to auth.json and set your own user and password\n'
             '[Security] (or set FOOOCUS_ALLOW_REMOTE_FILE_ACTIONS=1).\n' + '!' * 78)

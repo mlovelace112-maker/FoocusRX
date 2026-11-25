@@ -13,32 +13,38 @@ modules_path = os.path.dirname(os.path.realpath(__file__))
 script_path = os.path.dirname(modules_path)
 
 
-def webpath(fn):
-    if fn.startswith(script_path):
-        web_path = os.path.relpath(fn, script_path).replace('\\', '/')
-    else:
-        web_path = os.path.abspath(fn)
+# Gradio 5 serves files at /gradio_api/file=<absolute path>; Gradio 4 at /file=<path>.
+FILE_ROUTE = 'gradio_api/file=' if int(gr.__version__.split('.')[0]) >= 5 else 'file='
 
-    return f'file={web_path}?{os.path.getmtime(fn)}'
+
+def file_url(fn):
+    """URL (relative to the app root) for a local file Gradio may serve."""
+    if FILE_ROUTE == 'file=' and fn.startswith(script_path):
+        return FILE_ROUTE + os.path.relpath(fn, script_path).replace('\\', '/')
+    return FILE_ROUTE + os.path.abspath(fn)
+
+
+def webpath(fn):
+    return f'{file_url(fn)}?{os.path.getmtime(fn)}'
+
+
+JS_FILES = ('script.js', 'contextMenus.js', 'localization.js', 'zoom.js', 'edit-attention.js', 'viewer.js',
+            'imageviewer.js')
+
+
+def _inline_script(name):
+    # Inlined like style.css: Gradio serves file= as application/octet-stream,
+    # and Gradio 5 adds X-Content-Type-Options: nosniff, so browsers refuse to
+    # run <script src="file=..."> at all. Our own files: only </script needs escaping.
+    with open(os.path.join(script_path, 'javascript', name), encoding='utf-8') as f:
+        code = f.read().replace('</script', '<\\/script')
+    return f'<script type="text/javascript" data-file="{name}">\n{code}\n</script>\n'
 
 
 def javascript_html():
-    script_js_path = webpath('javascript/script.js')
-    context_menus_js_path = webpath('javascript/contextMenus.js')
-    localization_js_path = webpath('javascript/localization.js')
-    zoom_js_path = webpath('javascript/zoom.js')
-    edit_attention_js_path = webpath('javascript/edit-attention.js')
-    viewer_js_path = webpath('javascript/viewer.js')
-    image_viewer_js_path = webpath('javascript/imageviewer.js')
     samples_path = webpath(os.path.abspath('./sdxl_styles/samples/fooocus_v2.jpg'))
     head = f'<script type="text/javascript">{localization_js(args_manager.args.language)}</script>\n'
-    head += f'<script type="text/javascript" src="{script_js_path}"></script>\n'
-    head += f'<script type="text/javascript" src="{context_menus_js_path}"></script>\n'
-    head += f'<script type="text/javascript" src="{localization_js_path}"></script>\n'
-    head += f'<script type="text/javascript" src="{zoom_js_path}"></script>\n'
-    head += f'<script type="text/javascript" src="{edit_attention_js_path}"></script>\n'
-    head += f'<script type="text/javascript" src="{viewer_js_path}"></script>\n'
-    head += f'<script type="text/javascript" src="{image_viewer_js_path}"></script>\n'
+    head += ''.join(_inline_script(name) for name in JS_FILES)
     head += f'<meta name="samples-path" content="{samples_path}">\n'
 
     if args_manager.args.theme:
