@@ -14,6 +14,7 @@ import modules.gradio_hijack as grh
 from modules import gradio_compat as gc
 import modules.style_sorter as style_sorter
 import modules.meta_parser
+import modules.prompt_rewriter
 import modules.draft_mode
 import modules.model_profiles
 import modules.util
@@ -211,6 +212,13 @@ with shared.gradio_root:
                     default_prompt = modules.config.default_prompt
                     if isinstance(default_prompt, str) and default_prompt != '':
                         shared.gradio_root.load(lambda: default_prompt, outputs=prompt)
+
+                    with gr.Row():
+                        rewrite_button = gr.Button(value='✨ Rewrite prompt', size='sm', variant='secondary',
+                                                   elem_id='rewrite_prompt_button', min_width=0)
+                        rewrite_undo = gr.Button(value='↩ Undo rewrite', size='sm', variant='secondary',
+                                                 interactive=False, min_width=0)
+                    prompt_before_rewrite = gr.State(None)
 
                 with gr.Column(scale=3, min_width=0):
                     # Gradio 4 removed the (always-ignored) `label` kwarg on
@@ -1208,6 +1216,20 @@ with shared.gradio_root:
                 parsed_parameters = metadata_parser.to_json(parameters)
 
             return modules.meta_parser.load_parameter_button_click(parsed_parameters, state_is_generating, inpaint_mode)
+
+        def rewrite_prompt_clicked(current_prompt, model_name):
+            try:
+                rewritten = modules.prompt_rewriter.rewrite(
+                    current_prompt, modules.prompt_rewriter.style_for_model(model_name))
+            except (ValueError, FileNotFoundError, RuntimeError) as exc:
+                raise gr.Error(str(exc))
+            return rewritten, current_prompt, gr.update(interactive=True)
+
+        rewrite_button.click(rewrite_prompt_clicked, inputs=[prompt, base_model],
+                             outputs=[prompt, prompt_before_rewrite, rewrite_undo], show_progress=True)
+        rewrite_undo.click(lambda previous: (previous, None, gr.update(interactive=False)),
+                           inputs=prompt_before_rewrite, outputs=[prompt, prompt_before_rewrite, rewrite_undo],
+                           queue=False, show_progress=False)
 
         metadata_import_button.click(trigger_metadata_import, inputs=[metadata_input_image, state_is_generating], outputs=load_data_outputs, queue=False, show_progress=True) \
             .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
