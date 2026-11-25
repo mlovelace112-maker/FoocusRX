@@ -1038,32 +1038,109 @@ with shared.gradio_root:
                                                scale=4, container=False)
                     history_refresh = gr.Button(value='\U0001f504 Refresh', variant='secondary',
                                                 elem_classes='refresh_button', scale=1)
-                history_gallery = gr.Gallery(show_label=False, columns=4, height=360, object_fit='contain',
-                                             allow_preview=False)
+                # Sized in css/style.css (#history_gallery .grid-wrap) so the grid
+                # scrolls; Gradio's height= clipped it instead.
+                history_gallery = gr.Gallery(show_label=False, columns=4, object_fit='contain',
+                                             allow_preview=False, elem_id='history_gallery')
+                history_select_mode = gr.Checkbox(label='Select multiple', value=False, container=False,
+                                                  info='Click images to add them to the selection.')
+                with gr.Row(elem_classes='rx-toolbar'):
+                    history_select_all = gr.Button(value='Select all shown', size='sm', min_width=0)
+                    history_clear = gr.Button(value='Clear selection', size='sm', min_width=0)
+                history_marked_gallery = gr.Gallery(label='Selected (click one to unselect)', columns=8,
+                                                    object_fit='cover', allow_preview=False, visible=False,
+                                                    elem_id='history_marked_gallery')
+                with gr.Row(elem_classes='rx-toolbar'):
+                    history_delete = gr.Button(value='\U0001f5d1 Delete', size='sm', variant='stop',
+                                               interactive=False, min_width=0, elem_id='history_delete')
+                    history_undo = gr.Button(value='\u21a9 Undo delete', size='sm', interactive=False,
+                                             min_width=0, elem_id='history_undo')
+                history_status = gr.Markdown(value='', elem_classes='rx-status')
                 history_details = gr.Textbox(label='Selected image', lines=6, interactive=False)
                 history_load = gr.Button(value='Load these settings', interactive=False)
                 history_items = gr.State([])
                 history_selected = gr.State(None)
+                history_marked = gr.State([])       # paths picked in "Select multiple" mode
+                history_last_moves = gr.State([])   # [(original, trashed)] for Undo
 
-                def history_refresh_clicked(query):
+                def history_selection_view(marked, item):
+                    if marked:
+                        delete = gr.update(value=f'\U0001f5d1 Delete {len(marked)} selected', interactive=True)
+                    elif item is not None:
+                        delete = gr.update(value='\U0001f5d1 Delete this image', interactive=True)
+                    else:
+                        delete = gr.update(value='\U0001f5d1 Delete', interactive=False)
+                    marked_view = gr.update(value=[(path, os.path.basename(path)) for path in marked] or None,
+                                            visible=bool(marked))
+                    return [marked, marked_view, delete]
+
+                def history_refresh_clicked(query, marked=None):
                     items = modules.history.search(history_index.scan(modules.config.path_outputs), query)
                     items = items[:HISTORY_LIMIT]
                     gallery = [(item.path, f"{item.date} · seed {item.metadata.get('seed', '?')}") for item in items]
-                    return gallery, items, None, '', gr.update(interactive=False)
+                    marked = [path for path in (marked or []) if os.path.isfile(path)]
+                    return [gallery, items, None, '', gr.update(interactive=False)] + \
+                        history_selection_view(marked, None)
 
-                def history_select(items, evt: gr.SelectData):
+                def history_select(items, select_mode, marked, evt: gr.SelectData):
                     if not items or evt.index is None or evt.index >= len(items):
-                        return None, '', gr.update(interactive=False)
+                        return [None, '', gr.update(interactive=False)] + history_selection_view(marked, None)
                     item = items[evt.index]
-                    return item, modules.history.describe(item), gr.update(interactive=item.source != 'none')
+                    if select_mode:
+                        marked = [p for p in marked if p != item.path] if item.path in marked else marked + [item.path]
+                    return [item, modules.history.describe(item), gr.update(interactive=item.source != 'none')] + \
+                        history_selection_view(marked, item)
 
-                history_refresh_outputs = [history_gallery, history_items, history_selected, history_details, history_load]
+                def history_unmark(marked, item, evt: gr.SelectData):
+                    if evt.index is not None and 0 <= evt.index < len(marked):
+                        marked = marked[:evt.index] + marked[evt.index + 1:]
+                    return history_selection_view(marked, item)
+
+                def history_select_all_clicked(items, marked, item):
+                    marked = list(dict.fromkeys(list(marked) + [i.path for i in items]))
+                    return history_selection_view(marked, item)
+
+                def history_delete_clicked(marked, item, query):
+                    paths = list(marked) if marked else ([item.path] if item is not None else [])
+                    moves, skipped = modules.history.delete_items(paths, modules.config.path_outputs)
+                    where = modules.history.default_trash_dir(modules.config.path_outputs)
+                    where = 'the Trash' if where == os.path.expanduser('~/.Trash') else where
+                    status = f'Moved {len(moves)} image(s) to {where}.' if moves else 'Nothing was deleted.'
+                    if skipped:
+                        status += f' {len(skipped)} could not be moved.'
+                    return history_refresh_clicked(query, []) + \
+                        [status, gr.update(interactive=bool(moves)), moves]
+
+                def history_undo_clicked(moves, query, marked):
+                    restored = modules.history.restore_items(moves)
+                    return history_refresh_clicked(query, marked) + \
+                        [f'Restored {restored} image(s).', gr.update(interactive=False), []]
+
+                history_selection_outputs = [history_marked, history_marked_gallery, history_delete]
+                history_refresh_outputs = [history_gallery, history_items, history_selected, history_details,
+                                           history_load] + history_selection_outputs
+                history_undo_outputs = [history_status, history_undo, history_last_moves]
                 for trigger in (history_refresh.click, history_query.submit, history_tab.select):
-                    trigger(history_refresh_clicked, inputs=history_query, outputs=history_refresh_outputs,
-                            queue=False, show_progress=False)
-                history_gallery.select(history_select, inputs=history_items,
-                                       outputs=[history_selected, history_details, history_load],
+                    trigger(history_refresh_clicked, inputs=[history_query, history_marked],
+                            outputs=history_refresh_outputs, queue=False, show_progress=False)
+                history_gallery.select(history_select, inputs=[history_items, history_select_mode, history_marked],
+                                       outputs=[history_selected, history_details, history_load] +
+                                               history_selection_outputs,
                                        queue=False, show_progress=False)
+                history_marked_gallery.select(history_unmark, inputs=[history_marked, history_selected],
+                                              outputs=history_selection_outputs, queue=False, show_progress=False)
+                history_select_all.click(history_select_all_clicked,
+                                         inputs=[history_items, history_marked, history_selected],
+                                         outputs=history_selection_outputs, queue=False, show_progress=False)
+                history_clear.click(lambda item: history_selection_view([], item), inputs=history_selected,
+                                    outputs=history_selection_outputs, queue=False, show_progress=False)
+                history_delete.click(history_delete_clicked,
+                                     inputs=[history_marked, history_selected, history_query],
+                                     outputs=history_refresh_outputs + history_undo_outputs,
+                                     queue=False, show_progress=False)
+                history_undo.click(history_undo_clicked, inputs=[history_last_moves, history_query, history_marked],
+                                   outputs=history_refresh_outputs + history_undo_outputs,
+                                   queue=False, show_progress=False)
 
         state_is_generating = gr.State(False)
 

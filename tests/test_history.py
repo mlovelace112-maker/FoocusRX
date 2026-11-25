@@ -208,3 +208,62 @@ class TestToLoadParameters(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestDeleteAndRestore(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.root = tempfile.mkdtemp()
+        self.trash = tempfile.mkdtemp()
+        self.addCleanup(__import__('shutil').rmtree, self.root, True)
+        self.addCleanup(__import__('shutil').rmtree, self.trash, True)
+        self.day = os.path.join(self.root, '2026-11-25')
+        os.makedirs(self.day)
+        self.images = []
+        for name in ('a.png', 'b.png', 'c.jpg'):
+            path = os.path.join(self.day, name)
+            open(path, 'wb').write(b'x')
+            self.images.append(path)
+
+    def test_moves_selected_images_and_undo_restores(self):
+        moves, skipped = history.delete_items(self.images[:2], self.root, self.trash)
+        self.assertEqual((len(moves), skipped), (2, []))
+        self.assertFalse(os.path.exists(self.images[0]))
+        self.assertTrue(os.path.exists(self.images[2]))
+        self.assertEqual(sorted(os.listdir(self.trash)), ['a.png', 'b.png'])
+        self.assertEqual(history.restore_items(moves), 2)
+        self.assertTrue(all(os.path.exists(p) for p in self.images))
+
+    def test_name_clash_in_trash_gets_suffix(self):
+        open(os.path.join(self.trash, 'a.png'), 'wb').write(b'old')
+        moves, _ = history.delete_items([self.images[0]], self.root, self.trash)
+        self.assertTrue(moves[0][1].endswith('a (1).png'))
+
+    def test_refuses_paths_outside_dated_output_folders(self):
+        outside = os.path.join(self.root, 'notes.png')          # not in a date folder
+        open(outside, 'wb').write(b'x')
+        log = os.path.join(self.day, 'log.html')                 # not an image
+        open(log, 'w').write('<html>')
+        sneaky = os.path.join(self.day, '..', '..', 'x.png')     # escapes the root
+        moves, skipped = history.delete_items([outside, log, sneaky, '/etc/hosts', None], self.root, self.trash)
+        self.assertEqual(moves, [])
+        self.assertEqual(len(skipped), 5)
+        self.assertTrue(os.path.exists(outside) and os.path.exists(log))
+
+    def test_duplicates_and_missing_files(self):
+        moves, skipped = history.delete_items([self.images[0], self.images[0], self.images[0] + 'x'],
+                                              self.root, self.trash)
+        self.assertEqual((len(moves), len(skipped)), (1, 1))
+
+    def test_restore_skips_when_original_name_taken(self):
+        moves, _ = history.delete_items([self.images[0]], self.root, self.trash)
+        open(self.images[0], 'wb').write(b'new')
+        self.assertEqual(history.restore_items(moves), 0)
+        self.assertTrue(os.path.exists(moves[0][1]))
+
+    def test_trash_scan_ignores_fallback_trash_folder(self):
+        trash = os.path.join(self.root, 'trash')
+        history.delete_items([self.images[0]], self.root, trash)
+        names = [i.filename for i in history.HistoryIndex(embedded_reader=lambda p: None).scan(self.root)]
+        self.assertNotIn('a.png', names)
+        self.assertEqual(sorted(names), ['b.png', 'c.jpg'])

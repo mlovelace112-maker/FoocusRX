@@ -473,3 +473,9 @@ div:has(> #positive_prompt) {
   #final_gallery { height: 460px !important; }
   .rx-subtitle { display: none; }
 }
+
+/* History tab: the grid itself scrolls (Gradio's height= clipped it) */
+#history_gallery .grid-wrap { max-height: 440px !important; height: auto !important; overflow-y: auto !important; }
+#history_gallery { height: auto !important; }
+#history_marked_gallery .grid-wrap { max-height: 150px !important; height: auto !important; overflow-y: auto !important; }
+#history_marked_gallery { height: 200px !important; }
