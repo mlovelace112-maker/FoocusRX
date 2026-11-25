@@ -1619,15 +1619,18 @@ with shared.gradio_root:
             family, memory, choices = modules.ui_family.model_changed(
                 model, shown_family, memory, modules.config.model_filenames)
             sdxl = family != modules.ui_family.FLUX
-            # Untick Input Image / Enhance in FLUX mode so nothing stays on while hidden.
-            image_toggles = [gr.update(visible=True)] * 2 if sdxl else [gr.update(visible=False, value=False)] * 2
+            # FLUX keeps Input Image (Upscale or Variation works) but hides the
+            # Image Prompt / Inpaint tabs; Enhance is unticked so nothing stays on hidden.
+            image_toggles = [gr.update(visible=True), gr.update(visible=True)] if sdxl else \
+                [gr.update(visible=True), gr.update(visible=False, value=False)]
+            image_toggles += [gr.update(visible=sdxl), gr.update(visible=sdxl)]  # ip_tab, inpaint_tab
             return ([gr.update(value=family), memory,
                      gr.update() if choices is None else gr.update(choices=choices),
                      gr.update(visible=not sdxl)] + image_toggles + [gr.update(visible=sdxl)] * len(sdxl_only))
 
         base_model.change(base_model_changed, inputs=[base_model, model_family, family_memory],
                           outputs=[model_family, family_memory, base_model, flux_notice,
-                                   input_image_checkbox, enhance_checkbox] + sdxl_only,
+                                   input_image_checkbox, enhance_checkbox, ip_tab, inpaint_tab] + sdxl_only,
                           queue=False, show_progress=False)
 
         def history_load_clicked(item, is_generating):

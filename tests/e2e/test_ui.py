@@ -32,7 +32,9 @@ HISTORY_STATE = f"""(() => {{ const w = document.querySelector('#history_gallery
 MAIN_STATE = """(() => { const v = s => { const e = document.querySelector(s); return !!(e && e.offsetParent !== null); };
   return {family: document.querySelector('#model_family input').value, model: document.querySelector('#base_model input').value,
           negative_visible: v('#negative_prompt_accordion'), render_full_visible: v('#render_full_button'),
-          gallery_imgs: document.querySelectorAll('#final_gallery img').length}; })()"""
+          gallery_imgs: document.querySelectorAll('#final_gallery img').length,
+          input_image_visible: [...document.querySelectorAll('label')].some(l => l.innerText.trim() === 'Input Image' && l.offsetParent !== null),
+          ip_tab_present: [...document.querySelectorAll('button[role=tab]')].some(b => b.innerText.trim() === 'Image Prompt')}; })()"""
 
 
 def run(scenario, path=''):
@@ -90,6 +92,9 @@ class TestPage(unittest.TestCase):
         self.assertEqual(flux['family'], 'FLUX.1')
         self.assertTrue(flux['model'].endswith('.gguf'))
         self.assertFalse(flux['negative_visible'] or flux['render_full_visible'])
+        self.assertTrue(flux['input_image_visible'])   # Vary / Upscale work with FLUX
+        self.assertFalse(flux['ip_tab_present'])        # Image Prompt doesn't
+        self.assertTrue(back['ip_tab_present'])
         self.assertEqual(back['family'], 'SDXL')
         self.assertTrue(back['negative_visible'])
         if start['family'] == 'SDXL':

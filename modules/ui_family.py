@@ -10,8 +10,9 @@ FLUX = 'FLUX.1'
 FAMILIES = [SDXL, FLUX]
 
 FLUX_NOTICE = ('**FLUX.1 schnell**: 4 steps, natural-language prompts. Uses your prompt, styles, aspect ratio, '
-               'seed and image number. SDXL-only controls (negative prompt, performance, CFG, sampler, LoRAs, '
-               'refiner, image input, enhance) are hidden.')
+               'seed and image number; **Input Image > Upscale or Variation** does Vary and Upscale. SDXL-only '
+               'controls (negative prompt, performance, CFG, sampler, LoRAs, refiner, image prompt, inpaint, '
+               'enhance) are hidden.')
 FLUX_MISSING = ('FLUX.1 is not installed. Download it (~12 GB) with: '
                 'venv/bin/python scripts/download_flux.py, then click Refresh All Files.')
 

@@ -1,4 +1,4 @@
-"""FLUX.1 [schnell] text-to-image.
+"""FLUX.1 [schnell] text-to-image, image-to-image and tiled refine.
 
 Sampling follows black-forest-labs/flux @ 802fb47 (Apache-2.0):
 src/flux/sampling.py (get_noise, prepare, get_schedule, denoise, unpack) with
@@ -94,6 +94,41 @@ def denoise(model, img, img_ids, txt, txt_ids, vec, timesteps: list, callback=No
     return img
 
 
+def img2img_schedule(num_steps: int, strength: float) -> list:
+    """Flow-matching image-to-image: start at t=strength on the straight path
+    x_t = t * noise + (1 - t) * image and integrate to 0, using the share of
+    the schnell schedule that strength covers (at least one step)."""
+    strength = min(max(float(strength), 0.05), 1.0)
+    steps = max(1, math.ceil(num_steps * strength))
+    return torch.linspace(strength, 0, steps + 1).tolist()
+
+
+def feather_weights(height: int, width: int, overlap: int, top: bool, bottom: bool, left: bool,
+                    right: bool) -> np.ndarray:
+    """HxW blend weights for a tile: linear ramps over ``overlap`` px on the
+    sides that overlap a neighbour, 1 elsewhere (never 0, so edges count)."""
+    def ramp(n, start, end):
+        w = np.ones(n, dtype=np.float32)
+        r = min(overlap, n // 2)
+        if r > 0:
+            edge = (np.arange(r, dtype=np.float32) + 1) / (r + 1)
+            if start:
+                w[:r] = edge
+            if end:
+                w[-r:] = edge[::-1]
+        return w
+    return np.outer(ramp(height, top, bottom), ramp(width, left, right))
+
+
+def tile_starts(size: int, tile: int, overlap: int) -> list:
+    """Start offsets covering ``size`` with tiles of ``tile`` overlapping by >= ``overlap``."""
+    if size <= tile:
+        return [0]
+    stride = tile - overlap
+    starts = list(range(0, size - tile, stride)) + [size - tile]
+    return sorted(set(starts))
+
+
 def unpack(x: torch.Tensor, height: int, width: int) -> torch.Tensor:
     return rearrange(x, "b (h w) (c ph pw) -> b c (h ph) (w pw)",
                      h=math.ceil(height / 16), w=math.ceil(width / 16), ph=2, pw=2)
@@ -166,9 +201,10 @@ class FluxSchnell:
 
     @torch.no_grad()
     def generate(self, prompt: str, width: int, height: int, seed: int, steps: int = DEFAULT_STEPS,
-                 callback=None) -> np.ndarray:
+                 callback=None, init_image: np.ndarray | None = None, strength: float = 1.0) -> np.ndarray:
         """One image as an HxWx3 uint8 array. Width/height are rounded down to
-        multiples of 16."""
+        multiples of 16. With ``init_image`` (HxWx3 uint8, resized to fit) and
+        strength < 1 this is image-to-image: lower strength keeps more of it."""
         width, height = 16 * (width // 16), 16 * (height // 16)
         self.encode([prompt])
         self.load()
@@ -176,8 +212,15 @@ class FluxSchnell:
 
         t = time.perf_counter()
         x = get_noise(1, height, width, self.device, self.dtype, seed)
+        if init_image is not None and strength < 1.0:
+            timesteps = img2img_schedule(steps, strength)
+            x0 = self.encode_image(init_image, width, height)
+            x = timesteps[0] * x + (1.0 - timesteps[0]) * x0
+        else:
+            timesteps = None
         inp = prepare(x, txt.to(self.device, self.dtype), vec.to(self.device, self.dtype))
-        timesteps = get_schedule(steps, inp['img'].shape[1], shift=False)  # schnell: no shift
+        if timesteps is None:
+            timesteps = get_schedule(steps, inp['img'].shape[1], shift=False)  # schnell: no shift
         x = denoise(self.transformer, **inp, timesteps=timesteps, callback=callback)
         x = unpack(x.float(), height, width).to(self.dtype)
         if torch.backends.mps.is_available():
@@ -189,3 +232,39 @@ class FluxSchnell:
         image = ((image[0] + 1.0) * 127.5).round().byte().permute(1, 2, 0).cpu().numpy()
         self.timings.decode_s += time.perf_counter() - t
         return image
+
+    @torch.no_grad()
+    def encode_image(self, image: np.ndarray, width: int, height: int) -> torch.Tensor:
+        """HxWx3 uint8 -> latent (1x16xH/8xW/8) at width x height."""
+        from PIL import Image
+        if image.shape[1] != width or image.shape[0] != height:
+            image = np.array(Image.fromarray(image).resize((width, height), Image.LANCZOS))
+        x = torch.from_numpy(image).to(self.device, torch.float32).permute(2, 0, 1)[None] / 127.5 - 1.0
+        return self.vae.encode(x.to(self.dtype))
+
+    @torch.no_grad()
+    def refine_tiled(self, prompt: str, image: np.ndarray, seed: int, strength: float = 0.35, tile: int = 1024,
+                     overlap: int = 128, steps: int = DEFAULT_STEPS, callback=None) -> np.ndarray:
+        """Image-to-image over overlapping tiles (keeps memory flat at large
+        sizes), blended with feathered seams. Returns an image of the same size
+        (rounded down to multiples of 16)."""
+        height, width = 16 * (image.shape[0] // 16), 16 * (image.shape[1] // 16)
+        image = image[:height, :width]
+        tile_h, tile_w = min(tile, height), min(tile, width)
+        ys, xs = tile_starts(height, tile_h, overlap), tile_starts(width, tile_w, overlap)
+        acc = np.zeros((height, width, 3), dtype=np.float32)
+        weight = np.zeros((height, width, 1), dtype=np.float32)
+        total, done = len(ys) * len(xs), 0
+        for y in ys:
+            for x in xs:
+                def on_step(step, steps_, done=done):
+                    if callback is not None:
+                        callback(done * steps_ + step, total * steps_)
+                out = self.generate(prompt, tile_w, tile_h, seed + done, steps=steps, callback=on_step,
+                                    init_image=image[y:y + tile_h, x:x + tile_w], strength=strength)
+                w = feather_weights(tile_h, tile_w, overlap, y > 0, y + tile_h < height, x > 0,
+                                    x + tile_w < width)[..., None]
+                acc[y:y + tile_h, x:x + tile_w] += out.astype(np.float32) * w
+                weight[y:y + tile_h, x:x + tile_w] += w
+                done += 1
+        return np.clip(acc / np.maximum(weight, 1e-6), 0, 255).round().astype(np.uint8)

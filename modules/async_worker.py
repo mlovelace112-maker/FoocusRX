@@ -1172,8 +1172,9 @@ def worker():
     @torch.no_grad()
     @torch.inference_mode()
     def handle_flux(async_task: AsyncTask):
-        """FLUX.1 schnell text-to-image (modules/flux). Only the settings in
-        flux.app.UNSUPPORTED_NOTICE's "uses" list apply."""
+        """FLUX.1 schnell (modules/flux): text-to-image, or Vary / Upscale when
+        Input Image > "Upscale or Variation" has an image (flux_app.image_mode).
+        Only the settings in flux.app.UNSUPPORTED_NOTICE's "uses" list apply."""
         import modules.flux.app as flux_app
         import modules.constants as constants
         from modules.private_logger import log
@@ -1181,7 +1182,17 @@ def worker():
 
         async_task.processing = True
         started = time.perf_counter()
-        progressbar(async_task, 1, 'Freeing SDXL and loading FLUX.1 schnell ...')
+        mode = flux_app.image_mode(async_task.input_image_checkbox, async_task.current_tab,
+                                   async_task.uov_method, async_task.uov_input_image)
+        source = HWC3(async_task.uov_input_image) if mode else None
+        upscaled = None
+        if mode and mode[0] in ('upscale', 'upscale_fast'):
+            progressbar(async_task, 2, f'Upscaling {mode[1]}x ...')
+            factor = mode[1]
+            upscaled = perform_upscale(source)
+            upscaled = resample_image(upscaled, width=int(source.shape[1] * factor),
+                                      height=int(source.shape[0] * factor))
+        progressbar(async_task, 3, 'Freeing SDXL and loading FLUX.1 schnell ...')
         flux_app.free_sdxl()
         flux = flux_app.get_pipeline()
         before = dict(vars(flux.timings))
@@ -1217,8 +1228,22 @@ def worker():
                                                       None)])
 
             progressbar(async_task, int(5 + 90 * i / total), f'Encoding prompt for image {i + 1}/{total} ...')
+            mode_label = None
             try:
-                image = flux.generate(text, width, height, seed, callback=on_step)
+                if mode is None:
+                    image = flux.generate(text, width, height, seed, callback=on_step)
+                elif mode[0] == 'vary':
+                    vary_w, vary_h = flux_app.vary_size(source.shape[0], source.shape[1])
+                    image = flux.generate(text, vary_w, vary_h, seed, callback=on_step, init_image=source,
+                                          strength=mode[1])
+                    mode_label = f'{async_task.uov_method} (strength {mode[1]})'
+                elif mode[0] == 'upscale':
+                    image = flux.refine_tiled(text, upscaled, seed, strength=flux_app.UPSCALE_REFINE_STRENGTH,
+                                              callback=on_step)
+                    mode_label = f'{async_task.uov_method} (ESRGAN + FLUX refine {flux_app.UPSCALE_REFINE_STRENGTH})'
+                else:  # upscale_fast: ESRGAN only
+                    image = upscaled
+                    mode_label = f'{async_task.uov_method} (ESRGAN)'
             except ldm_patched.modules.model_management.InterruptProcessingException:
                 if async_task.last_stop == 'skip':
                     print('User skipped')
@@ -1245,6 +1270,7 @@ def worker():
                 ('Base Model', 'base_model', flux_app.FLUX_MODEL_NAME),
                 ('FLUX steps', 'flux_steps', 4),
                 *([('Auto quality prompts', 'auto_quality_prompts', 'flux')] if quality_added else []),
+                *([('FLUX image mode', 'flux_image_mode', mode_label)] if mode_label else []),
                 ('FLUX sampler', 'flux_sampler', 'flow-matching euler'),
                 ('Version', 'version', 'FoocusRX FLUX.1 schnell'),
             ]
