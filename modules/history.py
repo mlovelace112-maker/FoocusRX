@@ -214,3 +214,75 @@ def to_load_parameters(metadata: dict, model_filenames, lora_filenames, vae_file
             parts[name_index] = resolved
             params[key] = ' : '.join(parts)
     return params
+
+
+# --- Deleting images (History tab) -------------------------------------------
+#
+# Deleting never unlinks: images move to the macOS Trash (~/.Trash) when it is
+# available, otherwise to <outputs>/trash/, so a mistake can be undone in the
+# app (restore_items) or from the Finder. Only image files inside a dated
+# folder of the outputs root can be moved.
+
+def default_trash_dir(outputs_root: str) -> str:
+    mac_trash = os.path.expanduser('~/.Trash')
+    if os.path.isdir(mac_trash) and os.access(mac_trash, os.W_OK):
+        return mac_trash
+    return os.path.join(outputs_root, 'trash')
+
+
+def is_deletable(path: str, outputs_root: str) -> bool:
+    """True for an existing image file directly inside <outputs_root>/<YYYY-MM-DD>/."""
+    if not path or not outputs_root or not str(path).lower().endswith(IMAGE_EXTENSIONS):
+        return False
+    real = os.path.realpath(path)
+    root = os.path.realpath(outputs_root)
+    day_dir = os.path.dirname(real)
+    return (os.path.isfile(real) and os.path.dirname(day_dir) == root
+            and bool(_DATE_DIR_RE.match(os.path.basename(day_dir))))
+
+
+def _unique_path(directory: str, name: str) -> str:
+    base, ext = os.path.splitext(name)
+    candidate, n = os.path.join(directory, name), 1
+    while os.path.exists(candidate):
+        candidate = os.path.join(directory, f'{base} ({n}){ext}')
+        n += 1
+    return candidate
+
+
+def delete_items(paths, outputs_root: str, trash_dir: str | None = None):
+    """Move images to the trash. Returns (moves, skipped): ``moves`` is a list
+    of (original_path, trashed_path) for restore_items; ``skipped`` lists the
+    paths that were refused or failed."""
+    import shutil
+
+    trash_dir = trash_dir or default_trash_dir(outputs_root)
+    moves, skipped = [], []
+    for path in dict.fromkeys(paths or []):  # unique, order kept
+        if not is_deletable(path, outputs_root):
+            skipped.append(path)
+            continue
+        try:
+            os.makedirs(trash_dir, exist_ok=True)
+            target = _unique_path(trash_dir, os.path.basename(path))
+            shutil.move(os.path.realpath(path), target)
+            moves.append((os.path.realpath(path), target))
+        except OSError:
+            skipped.append(path)
+    return moves, skipped
+
+
+def restore_items(moves) -> int:
+    """Undo delete_items. Files whose original name is taken are left in the trash."""
+    import shutil
+
+    restored = 0
+    for original, trashed in moves or []:
+        if os.path.exists(trashed) and not os.path.exists(original):
+            try:
+                os.makedirs(os.path.dirname(original), exist_ok=True)
+                shutil.move(trashed, original)
+                restored += 1
+            except OSError:
+                pass
+    return restored
