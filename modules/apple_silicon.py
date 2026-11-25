@@ -505,11 +505,6 @@ def _log(info: dict) -> None:
             ".mtlflashattn_install_attempted and relaunch to retry "
             "the auto-install, or `pip install mtlflashattn` manually."
         )
-    if gen >= 5 and not os.environ.get("FOOOCUS_TORCH_COMPILE"):
-        print(
-            "[apple_silicon] M5+ detected: set FOOOCUS_TORCH_COMPILE=1 for "
-            "an additional 10-30% throughput (30-120s one-time warmup)."
-        )
 
 
 if __name__ == "__main__":

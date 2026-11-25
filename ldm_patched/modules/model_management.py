@@ -385,45 +385,13 @@ class LoadedModel:
                 # conversion. Log once and continue with the default layout.
                 print(f"[model_management] channels_last skipped: {exc!r}")
 
-        # Opt-in torch.compile pass. Traces the UNet to Inductor / MPS IR
-        # for another 10-30% throughput on M5+ and modern CUDA. Strictly
-        # opt-in because:
-        #   * First inference after load pays a one-time compile cost
-        #     (30-120s on M5, longer on CUDA with max-autotune).
-        #   * Some custom ops in Fooocus's LoRA / patching stack don't
-        #     trace cleanly; when that happens we fall back silently.
-        #   * Requires torch >= 2.5 for stable MPS backend support.
-        # Enable with FOOOCUS_TORCH_COMPILE=1. Mode override:
-        # FOOOCUS_TORCH_COMPILE_MODE={default,reduce-overhead,max-autotune}
-        # (default is 'reduce-overhead' - best throughput/warmup tradeoff
-        # on M5 and Ampere+).
-        _compile_env = os.environ.get("FOOOCUS_TORCH_COMPILE", "").strip()
-        if (
-            _compile_env == "1"
-            and lowvram_model_memory == 0
-            and _dev in ("mps", "cuda")
-            and hasattr(torch, "compile")
-        ):
-            _mode = os.environ.get("FOOOCUS_TORCH_COMPILE_MODE", "reduce-overhead")
-            try:
-                self.real_model = torch.compile(
-                    self.real_model,
-                    mode=_mode,
-                    fullgraph=False,
-                    dynamic=True,
-                )
-                print(
-                    f"[model_management] torch.compile enabled on {_dev} "
-                    f"(mode={_mode!r}). First inference will be slow while "
-                    f"the graph is traced."
-                )
-            except Exception as exc:
-                # torch.compile fell over on this graph. Common on custom
-                # ops or older torch. Continue with the eager model.
-                print(
-                    f"[model_management] torch.compile skipped ({exc.__class__.__name__}: "
-                    f"{exc}); running eager mode."
-                )
+        # A FOOOCUS_TORCH_COMPILE option used to wrap self.real_model in
+        # torch.compile here. It never took effect: samplers call
+        # model.apply_model() on the original object, not real_model's
+        # forward(). Compiling the UNet itself fails on MPS today (Inductor
+        # emits invalid Metal with dynamic shapes; with static shapes Dynamo
+        # can't trace the mtlflashattn kernel), so the option was removed.
+        # See docs/apple-silicon.md.
 
         return self.real_model
 
