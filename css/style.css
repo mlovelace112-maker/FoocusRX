@@ -486,3 +486,23 @@ div:has(> #positive_prompt) {
   padding: 6px 7px !important; font-size: 12.5px !important; min-width: 0 !important;
 }
 /* Gradio 5 measures a hidden copy of the tab bar (.tab-container.visually-hidden) to decide what overflows. */
+
+/* Full-window image viewer (javascript/rx_viewer.js) */
+#rx_viewer { display: none; position: fixed; inset: 0; z-index: 10000; background: rgba(8, 10, 18, 0.94); outline: none; }
+#rx_viewer.open { display: block; }
+body.rx-viewer-open { overflow: hidden; }
+#rx_viewer_stage { position: absolute; inset: 0 0 56px 0; display: flex; align-items: center; justify-content: center; overflow: auto; }
+#rx_viewer_img { max-width: calc(100vw - 32px); max-height: calc(100vh - 88px); object-fit: contain; cursor: zoom-in;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); border-radius: 4px; }
+#rx_viewer.actual #rx_viewer_stage { align-items: flex-start; justify-content: flex-start; }
+#rx_viewer.actual #rx_viewer_img { max-width: none; max-height: none; cursor: zoom-out; margin: auto; }
+#rx_viewer_bar { position: absolute; left: 0; right: 0; bottom: 0; height: 56px; display: flex; align-items: center;
+  justify-content: center; gap: 10px; color: #e5e7eb; font-size: 14px; }
+#rx_viewer_bar button, #rx_viewer_prev, #rx_viewer_next { background: rgba(255, 255, 255, 0.10); color: #f9fafb;
+  border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 8px; padding: 7px 12px; cursor: pointer; font-size: 14px; }
+#rx_viewer_bar button:hover, #rx_viewer_prev:hover, #rx_viewer_next:hover { background: rgba(255, 255, 255, 0.22); }
+#rx_viewer_count { min-width: 56px; text-align: center; opacity: 0.8; }
+#rx_viewer_prev, #rx_viewer_next { position: absolute; top: calc(50% - 28px); transform: translateY(-50%);
+  font-size: 34px; line-height: 1; padding: 10px 16px; }
+#rx_viewer_prev { left: 14px; }
+#rx_viewer_next { right: 14px; }

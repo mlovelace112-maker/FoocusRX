@@ -239,6 +239,8 @@ with shared.gradio_root:
                                                    elem_id='rewrite_prompt_button', min_width=0)
                         rewrite_undo = gr.Button(value='↩ Undo rewrite', size='sm', variant='secondary',
                                                  interactive=False, min_width=0)
+                        view_larger_button = gr.Button(value='\U0001f50d View larger', size='sm', min_width=0,
+                                                       elem_id='view_larger_button')
                         save_prompt_button = gr.Button(value='\U0001f4be Save prompt', size='sm', min_width=0,
                                                        elem_id='save_prompt_button')
                         render_full_button = gr.Button(value='⬆ Render full quality', size='sm',
@@ -1132,6 +1134,8 @@ with shared.gradio_root:
                                              min_width=0, elem_id='history_undo')
                 history_status = gr.Markdown(value='', elem_classes='rx-status', elem_id='history_status')
                 with gr.Row(elem_classes='rx-toolbar', elem_id='history_rating_row'):
+                    history_view = gr.Button(value='\U0001f50d View larger', size='sm', min_width=0,
+                                             elem_id='history_view')
                     history_fav = gr.Button(value='\u2661 Favourite', size='sm', min_width=0, interactive=False,
                                             elem_id='history_fav')
                     history_stars = gr.Radio(label='Rating', choices=HISTORY_RATING_CHOICES,
@@ -1289,6 +1293,17 @@ with shared.gradio_root:
                     .then(history_undo_clicked, inputs=[history_last_moves] + history_refresh_inputs,
                                    outputs=history_refresh_outputs + history_undo_outputs,
                                    queue=False, show_progress=False)
+                history_view_url = gr.Textbox(visible=False, elem_id='history_view_url')
+
+                def history_view_clicked(item):
+                    if item is None or not os.path.isfile(item.path):
+                        return ''
+                    return modules.ui_gradio_extensions.file_url(item.path)  # the original, not the thumbnail
+
+                history_view.click(history_view_clicked, inputs=history_selected, outputs=history_view_url,
+                                   queue=False, show_progress=False) \
+                    .then(None, inputs=history_view_url, queue=False, show_progress=False,
+                          **gc.js_kwarg("(url) => { if (url) { rxOpenViewer([url], 0); } return []; }"))
                 history_fav.click(history_fav_clicked, inputs=history_selected, outputs=history_rating_outputs,
                                   queue=False, show_progress=False)
                 history_stars.input(history_stars_changed, inputs=[history_selected, history_stars],
@@ -1490,6 +1505,8 @@ with shared.gradio_root:
                 raise gr.Error(str(exc))
             gr.Info(f"Saved to Prompts: \u201c{entry['name']}\u201d")
 
+        view_larger_button.click(None, queue=False, show_progress=False,
+                                 **gc.js_kwarg("() => { rxViewGallery('#final_gallery'); return []; }"))
         save_prompt_button.click(save_prompt_toolbar, inputs=[prompt, negative_prompt], queue=False,
                                  show_progress=False)
 
