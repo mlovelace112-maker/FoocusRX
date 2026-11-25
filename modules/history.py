@@ -224,6 +224,9 @@ def to_load_parameters(metadata: dict, model_filenames, lora_filenames, vae_file
 # folder of the outputs root can be moved.
 
 def default_trash_dir(outputs_root: str) -> str:
+    override = os.environ.get('FOOOCUS_TRASH_DIR')  # tests: never touch the real Trash
+    if override:
+        return override
     mac_trash = os.path.expanduser('~/.Trash')
     if os.path.isdir(mac_trash) and os.access(mac_trash, os.W_OK):
         return mac_trash
