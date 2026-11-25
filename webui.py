@@ -14,6 +14,7 @@ import modules.gradio_hijack as grh
 from modules import gradio_compat as gc
 import modules.style_sorter as style_sorter
 import modules.meta_parser
+import modules.flux.app
 import modules.history
 import modules.model_manager
 import threading
@@ -29,6 +30,12 @@ from modules.auth import auth_enabled, check_auth
 from modules.util import is_json
 
 history_index = modules.history.HistoryIndex()
+
+
+def refiner_choices():
+    """Refiners must be SDXL/SD1.5 checkpoints; FLUX.1 can't refine."""
+    return ['None'] + [m for m in modules.config.model_filenames if not modules.flux.app.is_flux(m)]
+
 HISTORY_LIMIT = 200  # newest matches shown in the History tab
 
 
@@ -670,7 +677,13 @@ with shared.gradio_root:
                 with gr.Group():
                     with gr.Row():
                         base_model = gr.Dropdown(label='Base Model (SDXL only)', choices=modules.config.model_filenames, value=modules.config.default_base_model_name, show_label=True)
-                        refiner_model = gr.Dropdown(label='Refiner (SDXL or SD 1.5)', choices=['None'] + modules.config.model_filenames, value=modules.config.default_refiner_model_name, show_label=True)
+                        refiner_model = gr.Dropdown(label='Refiner (SDXL or SD 1.5)', choices=refiner_choices(), value=modules.config.default_refiner_model_name, show_label=True)
+
+                    flux_notice = gr.Textbox(value=modules.flux.app.UNSUPPORTED_NOTICE, show_label=False,
+                                             interactive=False, lines=3,
+                                             visible=modules.flux.app.is_flux(modules.config.default_base_model_name))
+                    base_model.change(lambda m: gr.update(visible=modules.flux.app.is_flux(m)), inputs=base_model,
+                                      outputs=flux_notice, queue=False, show_progress=False)
 
                     refiner_switch = gr.Slider(label='Refiner Switch At', minimum=0.1, maximum=1.0, step=0.0001,
                                                info='Use 0.4 for SD1.5 realistic models; '
@@ -906,7 +919,7 @@ with shared.gradio_root:
                 def refresh_files_clicked():
                     modules.config.update_files()
                     results = [gr.update(choices=modules.config.model_filenames)]
-                    results += [gr.update(choices=['None'] + modules.config.model_filenames)]
+                    results += [gr.update(choices=refiner_choices())]
                     results += [gr.update(choices=[flags.default_vae] + modules.config.vae_filenames)]
                     if not args_manager.args.disable_preset_selection:
                         results += [gr.update(choices=modules.config.available_presets)]
