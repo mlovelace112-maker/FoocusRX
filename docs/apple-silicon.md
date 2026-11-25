@@ -79,27 +79,23 @@ other tuning info.
 - **Requirements:** `torch >= 2.5`, macOS 26+ for the fast tier (v2),
   macOS 27+ for the fastest tier (v2r).
 
-### `torch.compile` — UNet graph compilation (opt-in)
+### `torch.compile` — removed
 
-```bash
-FOOOCUS_TORCH_COMPILE=1 ./scripts/mac_launch.sh
-```
+`FOOOCUS_TORCH_COMPILE` (and `FOOOCUS_TORCH_COMPILE_MODE`) no longer do
+anything and the startup hint suggesting them is gone. Benchmarked on an
+M5 Pro (torch 2.12):
 
-When set, the loaded UNet is passed through `torch.compile` for another
-10–30% throughput on M5-class Macs and modern CUDA. Uses
-`mode="reduce-overhead"` by default; override with
-`FOOOCUS_TORCH_COMPILE_MODE=default|reduce-overhead|max-autotune`.
+- **It was a no-op.** It compiled `real_model`, but samplers call
+  `apply_model()` on the original object, so the compiled graph never ran:
+  images were bit-identical and per-step time unchanged.
+- **Compiling the UNet itself doesn't work on MPS yet.** With
+  `dynamic=True`, Inductor generates Metal code that fails to compile
+  (non-constant threadgroup array size); with `dynamic=False`, Dynamo
+  can't trace the `mtlflashattn` kernel.
 
-**Warmup cost.** The first inference after model load pays a one-time
-compile cost — typically 30–120s on M5, longer on CUDA with
-`max-autotune`. Every subsequent inference benefits.
-
-**Fallback is silent.** If the UNet doesn't trace cleanly (rare custom
-ops in a third-party LoRA, older torch, etc.) the loader logs
-`torch.compile skipped` and falls back to eager mode. Nothing breaks.
-
-**Requires** `torch >= 2.5`. FoocusRX pins `torch>=2.5,<3` on Darwin
-arm64 already.
+The large speedup on M4+ comes instead from running the UNet natively in
+bf16 (see `FOOOCUS_PREFERRED_DTYPE` above; ~2.5x per image vs the old
+fp32 compute).
 
 ### `fp4-fp8-for-torch-mps` — sub-byte weights (optional)
 

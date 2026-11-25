@@ -61,6 +61,10 @@ See [`docs/apple-silicon.md`](./docs/apple-silicon.md).
   `modules/core.py`; NumPy has no native bfloat16 support, so both the
   live preview and the final image decode crashed with
   `TypeError: Got unsupported ScalarType BFloat16` on Apple Silicon.
+- Removed the `FOOOCUS_TORCH_COMPILE` option from PR #11 and its startup
+  hint: it never took effect (samplers don't call the compiled object),
+  and compiling the UNet itself fails on MPS today. See
+  `docs/apple-silicon.md`.
 
 ## Upstream README
 
