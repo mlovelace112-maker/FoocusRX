@@ -104,6 +104,12 @@ class TestChooseProfile(TempModels):
         p = self.profile('sd15b.safetensors', tensors=['model.diffusion_model.input_blocks.0.0.weight'])
         self.assertFalse(p.supported)
 
+    def test_gguf_models_are_left_alone(self):
+        p = mp.choose_profile('flux1-schnell-Q4_K_S.gguf', '/nope/flux1-schnell-Q4_K_S.gguf', PRESETS)
+        self.assertFalse(p.supported)
+        self.assertEqual(p.settings, {})
+        self.assertIn('FLUX', p.reason)
+
     def test_unknown_or_unreadable_falls_back_to_default(self):
         self.assertEqual(self.profile('mystery.safetensors').name, 'default')
         self.assertEqual(mp.choose_profile('old.ckpt', '/nope/old.ckpt', PRESETS).name, 'default')

@@ -129,6 +129,9 @@ def preset_settings(preset: dict) -> dict:
 
 
 def choose_profile(model_filename: str, model_path: str | None, presets: dict) -> Profile:
+    if str(model_filename).lower().endswith('.gguf'):
+        # e.g. FLUX.1 schnell, which ignores the SDXL quality settings.
+        return Profile('none', 'GGUF model such as FLUX.1; SDXL settings left unchanged', supported=False)
     meta, tensors = read_header(model_path)
     if is_sdxl_base(meta, tensors) is False:
         return Profile('none', 'not an SDXL base model; settings left unchanged', supported=False)
