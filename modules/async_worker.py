@@ -6,6 +6,7 @@ from modules.patch import PatchSettings, patch_settings, patch_all
 from modules.prompt_queue import split_prompt_queue, queue_progress_title
 import modules.config
 import modules.quality_prompts as quality_prompts
+import modules.auto_negative as auto_negative
 import modules.util
 
 patch_all()
@@ -163,6 +164,7 @@ class AsyncTask:
         # task without it, so default to off.
         self.prompt_queue = bool(args.pop()) if args else False
         self.auto_quality = bool(args.pop()) if args else False  # modules/quality_prompts.py
+        self.auto_negative = bool(args.pop()) if args else False  # modules/auto_negative.py
 
         self.should_enhance = self.enhance_checkbox and (self.enhance_uov_method != disabled.casefold() or len(self.enhance_ctrls) > 0)
         self.images_to_enhance_count = 0
@@ -424,6 +426,8 @@ def worker():
             d.append(('Scheduler', 'scheduler', async_task.scheduler_name))
             if task.get('quality'):
                 d.append(('Auto quality prompts', 'auto_quality_prompts', task['quality']))
+            if task.get('auto_negative'):
+                d.append(('Auto negative prompt', 'auto_negative_prompt', task['auto_negative']))
             d.append(('VAE', 'vae', async_task.vae_name))
             d.append(('Seed', 'seed', str(task['task_seed'])))
 
@@ -778,9 +782,18 @@ def worker():
                     quality_family, ', '.join(positive_basic_workloads), ', '.join(negative_basic_workloads))
                 if q_positive:
                     positive_basic_workloads = positive_basic_workloads + [q_positive]
+                # Never suppress what the prompt asks for (e.g. "text" when it wants a sign).
+                q_negative = auto_negative.drop_conflicts(q_negative, ', '.join(positive_basic_workloads))
                 if q_negative:
                     negative_basic_workloads = negative_basic_workloads + [q_negative]
                 quality_used = quality_family if (q_positive or q_negative) else None
+
+            negative_added = ''
+            if getattr(async_task, 'auto_negative', False) and auto_negative.applies(async_task.cfg_scale, quality_family):
+                negative_added = auto_negative.build(', '.join(positive_basic_workloads),
+                                                     ', '.join(negative_basic_workloads))
+                if negative_added:
+                    negative_basic_workloads = negative_basic_workloads + [negative_added]
 
             positive_basic_workloads = remove_empty_str(positive_basic_workloads, default=task_prompt)
             negative_basic_workloads = remove_empty_str(negative_basic_workloads, default=task_negative_prompt)
@@ -800,6 +813,7 @@ def worker():
                 log_negative_prompt='\n'.join([task_negative_prompt] + task_extra_negative_prompts),
                 styles=task_styles,
                 quality=quality_used,
+                auto_negative=negative_added,
             ))
         if use_expansion:
             if advance_progress:

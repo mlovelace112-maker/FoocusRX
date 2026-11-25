@@ -662,6 +662,11 @@ with shared.gradio_root:
                     auto_quality_prompts = gr.Checkbox(label='Auto quality prompts', value=True,
                                                        info='Adds quality terms suited to the model. '
                                                             'Your prompt box is not changed.')
+                    auto_negative_prompt = gr.Checkbox(label='Auto negative prompt', value=True,
+                                                       info='Adds negatives that fit your prompt (e.g. '
+                                                            '“illustration” for a photo); never ones it asks for. '
+                                                            'Not used at CFG 1 or with FLUX.',
+                                                       elem_id='auto_negative_prompt')
                     draft_mode = gr.Checkbox(label='Draft mode (fast previews)', value=False,
                                              info=f'{modules.draft_mode.DRAFT_STEPS}-step drafts, ~2.5x faster. '
                                                   'Pick one, then “Render full quality”.',
@@ -1354,6 +1359,7 @@ with shared.gradio_root:
         ctrls += enhance_ctrls
         ctrls += [prompt_queue]  # AsyncTask reads these after the enhance controls, in this order
         ctrls += [auto_quality_prompts]
+        ctrls += [auto_negative_prompt]
 
         # get_task drops currentTask (ctrls[0]), hence the -1.
         DRAFT_ARG_INDEX.update({
@@ -1448,7 +1454,7 @@ with shared.gradio_root:
         # (.input); base_model.change follows every source (user, preset,
         # History, loaded parameters) and keeps the family, the model list and
         # the SDXL-only controls in step, without re-triggering itself.
-        sdxl_only = [negative_prompt_accordion, performance_selection, draft_mode, render_full_button,
+        sdxl_only = [negative_prompt_accordion, performance_selection, draft_mode, render_full_button, auto_negative_prompt,
                      refiner_col, lora_accordion, sdxl_guidance_col]
 
         def family_selected(family, memory):
