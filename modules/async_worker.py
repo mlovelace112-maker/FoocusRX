@@ -1171,6 +1171,28 @@ def worker():
 
     @torch.no_grad()
     @torch.inference_mode()
+    def resolve_lora(name):
+        return modules.util.get_file_from_folder_list(name, modules.config.paths_loras)
+
+    def family_loras(family, prompt_loras, async_task):
+        """The selected + prompt LoRAs that fit ``family``. Others (e.g. the
+        default preset's SDXL offset LoRA after switching to Krea 2) are
+        skipped, and the user is told once per task."""
+        import modules.lora_family as lora_family
+        from modules.sdcpp.app import merge_loras
+        wanted = merge_loras(async_task.loras, prompt_loras, modules.config.default_max_lora_number)
+        usable, skipped = lora_family.split_by_family(wanted, family, resolve_lora)
+        if skipped and not getattr(async_task, '_lora_skip_reported', False):
+            async_task._lora_skip_reported = True
+            names = ', '.join(n for n, _ in skipped)
+            print(f'[LoRA] skipped for {family} (made for another model family): {names}')
+            progressbar(async_task, 2, f'Skipping LoRAs made for another model family: {names}')
+        return usable
+
+    def lora_metadata(loras):
+        """Same keys as SDXL, so History > Load restores them."""
+        return [(f'LoRA {li + 1}', f'lora_combined_{li + 1}', f'{n} : {w}') for li, (n, w) in enumerate(loras)]
+
     def handle_flux(async_task: AsyncTask):
         """FLUX.1 schnell (modules/flux): text-to-image, or Vary / Upscale when
         Input Image > "Upscale or Variation" has an image (flux_app.image_mode).
@@ -1332,6 +1354,8 @@ def worker():
             # Whole prompt, line breaks kept (MOSS-Image renders multi-line text and JSON layouts).
             prompt = apply_arrays(apply_wildcards(async_task.prompt.strip(), rng, i,
                                                   async_task.read_wildcards_in_order), i)
+            prompt, prompt_loras = sdcpp_app.extract_prompt_loras(prompt, modules.config.lora_filenames)
+            loras = family_loras(spec.family, prompt_loras, async_task)
             text = sdcpp_app.build_prompt(prompt, async_task.style_selections, styles_table, rng)
             neg_text = apply_wildcards(negative.strip(), rng, i, async_task.read_wildcards_in_order) if negative else ''
 
@@ -1345,10 +1369,11 @@ def worker():
                         f'Loading {spec.family} and encoding prompt for image {i + 1}/{total} ...')
             with tempfile.TemporaryDirectory(prefix='foocusrx-sdcpp-') as tmp:
                 output = os.path.join(tmp, 'out.png')
+                lora_dir, lora_tags = sdcpp_app.stage_loras(loras, os.path.join(tmp, 'loras'), resolve_lora)
                 argv = sdcpp_runner.build_argv(
                     sdcpp_app.engine_path(), spec, model_dir, os.path.basename(async_task.base_model_name),
-                    prompt=text, negative_prompt=neg_text, width=width, height=height, seed=seed, steps=steps,
-                    cfg=spec.cfg, output=output, extra_args=sdcpp_app.extra_args())
+                    prompt=text + lora_tags, negative_prompt=neg_text, width=width, height=height, seed=seed,
+                    steps=steps, cfg=spec.cfg, output=output, extra_args=sdcpp_app.extra_args(), lora_dir=lora_dir)
                 try:
                     seconds = sdcpp_runner.run(argv, on_step=on_step, should_stop=should_stop,
                                                cwd=sdcpp_app.engine_dir())
@@ -1391,6 +1416,7 @@ def worker():
                 (f'{spec.family} steps', 'sdcpp_steps', steps),
                 (f'{spec.family} CFG', 'sdcpp_cfg', spec.cfg),
                 (f'{spec.family} sampler', 'sdcpp_sampler', f'{spec.sampler} {spec.scheduler or "default"}'),
+                *lora_metadata(loras),
                 ('Version', 'version', f'FoocusRX {spec.family} (stable-diffusion.cpp '
                                        f'{sdcpp_registry.ENGINE_VERSION})'),
             ]
