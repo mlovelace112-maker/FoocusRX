@@ -301,7 +301,9 @@ class TestImageToUiEndToEnd(ConfigPatched):
         self.assertEqual(r[I_PROMPT], 'a cat in a hat')
         self.assertEqual(r[I_SEED], 12345)
         self.assertEqual(r[I_ASPECT], modules.config.add_ratio('1024*1024'))
-        self.assertEqual(r[I_BASE_MODEL], MODEL)
+        # A dropdown update carrying the family's choices (meta_parser.with_family_choices).
+        self.assertEqual(r[I_BASE_MODEL]['value'], MODEL)
+        self.assertIn(MODEL, r[I_BASE_MODEL]['choices'])
 
     def test_png_fooocus(self):
         self.assert_loaded(self.run_pipeline(
@@ -317,6 +319,39 @@ class TestImageToUiEndToEnd(ConfigPatched):
                 'Steps: 30, Sampler: Euler, Seed: 12345, Size: 1024x1024, CFG scale: 4, '
                 'Model: juggernautXL_v8Rundiffusion, Raw prompt: a cat in a hat')
         self.assert_loaded(self.run_pipeline(png_with(text, MetadataScheme.A1111.value)))
+
+
+class TestLoadFamilyChoices(unittest.TestCase):
+    """Loading another family's image must bring that family's choices along,
+    or Gradio rejects the value ("not in the list of choices")."""
+
+    def test_krea_image_brings_krea_choices(self):
+        import os
+        import tempfile
+        from tests.test_lora_family import KREA, SDXL, write_safetensors
+        with tempfile.TemporaryDirectory() as d:
+            write_safetensors(os.path.join(d, 'krea_style.safetensors'), KREA)
+            write_safetensors(os.path.join(d, 'offset.safetensors'), SDXL)
+            models = [MODEL, 'Krea-2-Turbo-Q5_K_S.gguf']
+            with mock.patch.object(modules.config, 'model_filenames', models), \
+                    mock.patch.object(modules.config, 'lora_filenames', ['krea_style.safetensors', 'offset.safetensors']), \
+                    mock.patch.object(modules.config, 'paths_loras', [d]):
+                results = load_parameter_button_click(json.dumps({
+                    'base_model': 'Krea-2-Turbo-Q5_K_S.gguf',
+                    'lora_combined_1': 'krea_style.safetensors : 0.8',
+                    'lora_combined_2': 'offset.safetensors : 0.1'}), False, 'v2.6')
+        updates = [r for r in results if isinstance(r, dict) and 'choices' in r]
+        base = next(u for u in updates if u.get('value') == 'Krea-2-Turbo-Q5_K_S.gguf')
+        self.assertEqual(base['choices'], ['Krea-2-Turbo-Q5_K_S.gguf'])
+        loras = [u for u in updates if u is not base]
+        self.assertEqual(loras[0]['value'], 'krea_style.safetensors')
+        self.assertEqual(loras[0]['choices'], ['None', 'krea_style.safetensors'])
+        self.assertEqual(loras[1]['value'], 'None')  # an SDXL LoRA can't stay on a Krea 2 model
+
+    def test_missing_model_leaves_dropdown_alone(self):
+        with mock.patch.object(modules.config, 'model_filenames', [MODEL]):
+            results = load_parameter_button_click(json.dumps({'base_model': 'gone.safetensors'}), False, 'v2.6')
+        self.assertNotIn('gone.safetensors', [r for r in results if isinstance(r, str)])
 
 
 if __name__ == '__main__':

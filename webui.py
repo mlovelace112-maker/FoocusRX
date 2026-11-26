@@ -1674,9 +1674,14 @@ with shared.gradio_root:
             lora_family = memory.get('lora_family', initial_family)
             if family != lora_family:
                 memory['lora_family'] = family
-                memory[f'loras:{lora_family}'] = list(current_loras)
+                # Remember the old family's picks only if they are its LoRAs: after
+                # History > Load the dropdowns already hold the new family's.
+                old_options = lora_choices(lora_family)
+                if all(v in old_options for v in current_loras):
+                    memory[f'loras:{lora_family}'] = list(current_loras)
                 options = lora_choices(family)
-                remembered = memory.get(f'loras:{family}') or []
+                # Nothing remembered yet: the preset's LoRAs (those that fit the family).
+                remembered = memory.get(f'loras:{family}') or [f for _, f, _ in modules.config.default_loras]
                 lora_updates = []
                 for i, current in enumerate(current_loras):
                     if current != 'None' and current in options:

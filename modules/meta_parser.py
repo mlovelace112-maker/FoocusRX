@@ -42,6 +42,7 @@ def load_parameter_button_click(raw_metadata: dict | str, is_generating: bool, i
     get_str('refiner_swap_method', 'Refiner Swap Method', loaded_parameter_dict, results)
     get_number('adaptive_cfg', 'CFG Mimicking from TSNR', loaded_parameter_dict, results)
     get_number('clip_skip', 'CLIP Skip', loaded_parameter_dict, results, cast_type=int)
+    base_model_index = len(results)
     get_str('base_model', 'Base Model', loaded_parameter_dict, results)
     get_str('refiner_model', 'Refiner Model', loaded_parameter_dict, results)
     get_number('refiner_switch', 'Refiner Switch', loaded_parameter_dict, results)
@@ -67,10 +68,38 @@ def load_parameter_button_click(raw_metadata: dict | str, is_generating: bool, i
         performance = Performance(performance)
         performance_filename = performance.lora_filename()
 
+    lora_start = len(results)
     for i in range(modules.config.default_max_lora_number):
         get_lora(f'lora_combined_{i + 1}', f'LoRA {i + 1}', loaded_parameter_dict, results, performance_filename)
 
+    with_family_choices(results, base_model_index, lora_start)
     return results
+
+
+def with_family_choices(results: list, base_model_index: int, lora_start: int) -> None:
+    """The base model and LoRA dropdowns list only the shown family's files,
+    so a loaded value from another family (e.g. a Krea 2 image loaded from
+    History while SDXL is shown) must come with its family's choices, or
+    Gradio rejects it ("Value ... is not in the list of choices")."""
+    import modules.lora_family
+    import modules.ui_family
+    import modules.util
+    base_model = results[base_model_index]
+    if not isinstance(base_model, str):
+        return
+    if base_model not in modules.config.model_filenames:
+        results[base_model_index] = gr.update()  # not installed: keep the current model
+        return
+    family = modules.ui_family.family_of(base_model)
+    results[base_model_index] = gr.update(
+        value=base_model, choices=modules.ui_family.models_for(family, modules.config.model_filenames))
+    options = ['None'] + modules.lora_family.loras_for(
+        family, modules.config.lora_filenames,
+        lambda name: modules.util.get_file_from_folder_list(name, modules.config.paths_loras))
+    for i in range(lora_start + 1, len(results), 3):  # (enabled, name, weight) per slot
+        name = results[i]
+        if isinstance(name, str):
+            results[i] = gr.update(value=name if name in options else 'None', choices=options)
 
 
 def get_str(key: str, fallback: str | None, source_dict: dict, results: list, default=None) -> str | None:
