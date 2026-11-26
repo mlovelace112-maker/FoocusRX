@@ -333,15 +333,18 @@ class LoadedModel:
         if lowvram_model_memory == 0:
             patch_model_to = self.device
 
-        self.model.model_patches_to(self.device)
-        self.model.model_patches_to(self.model.model_dtype())
+        if patch_model_to is not None and is_device_mps(self.device) and _mps_budget_enabled():
+            self._patch_on_cpu_then_move()
+        else:
+            self.model.model_patches_to(self.device)
+            self.model.model_patches_to(self.model.model_dtype())
 
-        try:
-            self.real_model = self.model.patch_model(device_to=patch_model_to) #TODO: do something with loras and offloading to CPU
-        except Exception as e:
-            self.model.unpatch_model(self.model.offload_device)
-            self.model_unload()
-            raise e
+            try:
+                self.real_model = self.model.patch_model(device_to=patch_model_to) #TODO: do something with loras and offloading to CPU
+            except Exception as e:
+                self.model.unpatch_model(self.model.offload_device)
+                self.model_unload()
+                raise e
 
         if lowvram_model_memory > 0:
             print("loading in lowvram mode", lowvram_model_memory/(1024 * 1024))
@@ -394,6 +397,29 @@ class LoadedModel:
         # See docs/apple-silicon.md.
 
         return self.real_model
+
+    def _patch_on_cpu_then_move(self):
+        """Apple Silicon: apply LoRA patches on the CPU, then move the patched
+        model to MPS. Patching on MPS left ~one model's worth of allocator
+        memory behind with no tensor using it (SDXL + a LoRA: 9.2 GB allocated
+        for 4.8 GB of weights; torch.mps.empty_cache() does not return it), so
+        the VAE decode then had to evict the UNet. CPU patching does the same
+        fp32 arithmetic, holds 4.8 GB, and was faster (3.4 s vs 7.6 s for SDXL
+        with the offset LoRA on an M5 Pro)."""
+        cpu = torch.device('cpu')
+        if getattr(self.model, 'current_device', None) not in (None, cpu):
+            self.model.model.to(cpu)
+        self.model.model_patches_to(cpu)
+        self.model.model_patches_to(self.model.model_dtype())
+        try:
+            self.real_model = self.model.patch_model(device_to=None)
+            self.real_model.to(self.device)
+            self.model.current_device = self.device
+            self.model.model_patches_to(self.device)
+        except Exception as e:
+            self.model.unpatch_model(self.model.offload_device)
+            self.model_unload()
+            raise e
 
     def model_unload(self):
         if self.model_accelerated:
@@ -547,7 +573,10 @@ def unet_inital_load_device(parameters, dtype):
         return torch_dev
 
     cpu_dev = torch.device("cpu")
-    if ALWAYS_VRAM_OFFLOAD:
+    if ALWAYS_VRAM_OFFLOAD or is_device_mps(torch_dev):
+        # MPS: build on the CPU (same unified memory). LoRA patches are applied
+        # there anyway (LoadedModel._patch_on_cpu_then_move), so this avoids a
+        # GPU -> CPU round trip of the whole UNet on its first load.
         return cpu_dev
 
     model_size = dtype_size(dtype) * parameters
@@ -743,12 +772,45 @@ def pytorch_attention_flash_attention():
             return True
     return False
 
+def _mps_budget_enabled():
+    return os.environ.get('FOOOCUS_MPS_PSUTIL_FREE_MEMORY', '').strip() != '1'
+
+
+def _mps_free_memory():
+    """Free memory for an MPS device: what PyTorch's MPS allocator can still
+    hand out before its high watermark.
+
+    Upstream uses psutil's system-wide "available" here. On Apple Silicon that
+    is the wrong signal: GPU and CPU share one memory pool, so "unloading" a
+    model (moving it to the CPU) frees nothing, yet a busy 24 GB Mac often
+    reports only ~2 GB available. FoocusRX then evicted the SDXL UNet before
+    every VAE decode and spent 7-14 s moving it back for the next image. The
+    MPS budget is what actually limits GPU allocations. FOOOCUS_MPS_PSUTIL_FREE_MEMORY=1 restores
+    the upstream behaviour.
+    """
+    try:
+        limit = float(torch.mps.recommended_max_memory())
+        ratio = os.environ.get('PYTORCH_MPS_HIGH_WATERMARK_RATIO', '').strip()
+        if ratio:
+            ratio = float(ratio)
+            if ratio > 0:  # 0 disables PyTorch's limit; keep the recommended size as ours
+                limit *= min(ratio, 1.0)
+        # driver_allocated includes the allocator's cache, which counts toward
+        # PyTorch's limit ("other allocations" in its out-of-memory error).
+        return max(0, int(limit - torch.mps.driver_allocated_memory()))
+    except Exception:
+        return psutil.virtual_memory().available
+
+
 def get_free_memory(dev=None, torch_free_too=False):
     global directml_enabled
     if dev is None:
         dev = get_torch_device()
 
-    if hasattr(dev, 'type') and (dev.type == 'cpu' or dev.type == 'mps'):
+    if hasattr(dev, 'type') and dev.type == 'mps' and _mps_budget_enabled():
+        mem_free_total = _mps_free_memory()
+        mem_free_torch = mem_free_total
+    elif hasattr(dev, 'type') and (dev.type == 'cpu' or dev.type == 'mps'):
         mem_free_total = psutil.virtual_memory().available
         mem_free_torch = mem_free_total
     else:

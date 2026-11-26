@@ -16,8 +16,8 @@ SDCPP_FAMILIES = (KREA2, MOSS)
 
 FLUX_NOTICE = ('**FLUX.1 schnell**: 4 steps, natural-language prompts. Uses your prompt, styles, aspect ratio, '
                'seed and image number; **Input Image > Upscale or Variation** does Vary and Upscale. SDXL-only '
-               'controls (negative prompt, performance, CFG, sampler, LoRAs, refiner, image prompt, inpaint, '
-               'enhance) are hidden.')
+               'controls (negative prompt, performance, CFG, sampler, refiner, image prompt, inpaint, '
+               'enhance) are hidden. LoRAs made for FLUX.1 work (Advanced > Models).')
 FLUX_MISSING = ('FLUX.1 is not installed. Download it (~12 GB) with: '
                 'venv/bin/python scripts/download_flux.py, then click Refresh All Files.')
 NOTICES = {FLUX: FLUX_NOTICE, KREA2: sdcpp_registry.KREA2.notice, MOSS: sdcpp_registry.MOSS_IMAGE.notice}

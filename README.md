@@ -140,6 +140,12 @@ one, History delete and model downloads are disabled.
 - Krea 2 Turbo and MOSS-Image SFT as model families, run through
   stable-diffusion.cpp; download with `scripts/download_sdcpp.py`. See
   [`docs/krea2-moss-image.md`](./docs/krea2-moss-image.md).
+- Faster SDXL on Apple Silicon: the UNet stays loaded between images
+  (no offloading on unified memory, MPS memory budget, LoRAs patched on the
+  CPU): 2 images 123-135 s -> 102-103 s, same output. MOSS-Image ~2x faster
+  sampling with EasyCache.
+- LoRAs for every model family (SDXL, FLUX.1, Krea 2, MOSS-Image), listed
+  per family; see [`docs/krea2-moss-image.md#loras`](./docs/krea2-moss-image.md#loras).
 
 ## Upstream README
 

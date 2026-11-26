@@ -97,6 +97,49 @@ def build_prompt(prompt: str, styles: list, styles_table: dict, rng: random.Rand
     return ', '.join([text] + extra) if extra else text
 
 
+def extract_prompt_loras(prompt: str, lora_filenames: list):
+    """(prompt without <lora:NAME:W> tags, [(file name, weight), ...]).
+
+    Unlike util.parse_lora_references_from_prompt this keeps the rest of the
+    prompt byte for byte: MOSS-Image prompts carry line breaks and JSON."""
+    from modules.util import LORAS_PROMPT_PATTERN, get_filname_by_stem
+    found = []
+    for whole, stem, weight in LORAS_PROMPT_PATTERN.findall(prompt):
+        name = get_filname_by_stem(stem, lora_filenames)
+        if name is not None:
+            found.append((name, float(weight)))
+        prompt = prompt.replace(whole, '', 1)
+    return prompt.strip(), found
+
+
+def merge_loras(selected: list, from_prompt: list, limit: int) -> list:
+    """Selected LoRAs first, then prompt ones not already selected; 'None' and
+    zero weights dropped; at most ``limit``."""
+    out, seen = [], set()
+    for name, weight in list(selected) + list(from_prompt):
+        if name == 'None' or name in seen or float(weight) == 0:
+            continue
+        seen.add(name)
+        out.append((name, float(weight)))
+    return out[:limit]
+
+
+def stage_loras(loras: list, directory: str, resolve) -> tuple:
+    """Link the LoRA files into ``directory`` as l0, l1, ... so the tags stay
+    valid whatever the file names are (spaces, ':', '>', subfolders, several
+    LoRA folders). Returns (lora dir or None, prompt tag suffix)."""
+    if not loras:
+        return None, ''
+    os.makedirs(directory, exist_ok=True)
+    tags = []
+    for i, (name, weight) in enumerate(loras):
+        src = resolve(name)
+        ext = os.path.splitext(src)[1] or '.safetensors'
+        os.symlink(src, os.path.join(directory, f'l{i}{ext}'))
+        tags.append(f'<lora:l{i}:{weight:g}>')
+    return directory, ''.join(tags)
+
+
 def snap16(value: int) -> int:
     return max(256, 16 * int(round(value / 16)))
 

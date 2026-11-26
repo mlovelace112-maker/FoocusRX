@@ -17,6 +17,7 @@ import modules.meta_parser
 import modules.prompt_rewriter
 import modules.prompt_library
 import modules.ui_family
+import modules.lora_family
 import modules.security
 import modules.ui_theme
 import modules.draft_mode
@@ -39,6 +40,13 @@ from modules.auth import auth_enabled, check_auth
 from modules.util import is_json
 
 history_index = modules.history.HistoryIndex()
+
+
+def lora_choices(family):
+    """'None' plus the LoRA files made for ``family`` (by their tensor names)."""
+    return ['None'] + modules.lora_family.loras_for(
+        family, modules.config.lora_filenames,
+        lambda name: modules.util.get_file_from_folder_list(name, modules.config.paths_loras))
 
 
 def refiner_choices():
@@ -811,16 +819,20 @@ with shared.gradio_root:
                                          inputs=refiner_model, outputs=refiner_switch, show_progress=False, queue=False)
 
                 with gr.Accordion(label='LoRAs', open=any(e and f != 'None' for e, f, _ in modules.config.default_loras),
-                                  visible=initial_family == modules.ui_family.SDXL) as lora_accordion:
+                                  visible=True) as lora_accordion:
                     lora_ctrls = []
+                    lora_models = []
+                    initial_lora_choices = lora_choices(initial_family)
 
                     for i, (enabled, filename, weight) in enumerate(modules.config.default_loras):
                         with gr.Row():
                             lora_enabled = gr.Checkbox(label='Enable', value=enabled,
                                                        elem_classes=['lora_enable', 'min_check'], scale=1)
                             lora_model = gr.Dropdown(label=f'LoRA {i + 1}',
-                                                     choices=['None'] + modules.config.lora_filenames, value=filename,
+                                                     choices=initial_lora_choices,
+                                                     value=filename if filename in initial_lora_choices else 'None',
                                                      elem_classes='lora_model', scale=5)
+                            lora_models.append(lora_model)
                             lora_weight = gr.Slider(label='Weight', minimum=modules.config.default_loras_min_weight,
                                                     maximum=modules.config.default_loras_max_weight, step=0.01, value=weight,
                                                     elem_classes='lora_weight', scale=5)
@@ -1043,8 +1055,7 @@ with shared.gradio_root:
                     if not args_manager.args.disable_preset_selection:
                         results += [gr.update(choices=modules.config.available_presets)]
                     for i in range(modules.config.default_max_lora_number):
-                        results += [gr.update(interactive=True),
-                                    gr.update(choices=['None'] + modules.config.lora_filenames), gr.update()]
+                        results += [gr.update(interactive=True), gr.update(choices=lora_choices(family)), gr.update()]
                     return results
 
                 refresh_files_output = [base_model, refiner_model, vae_name]
@@ -1639,7 +1650,7 @@ with shared.gradio_root:
         # History, loaded parameters) and keeps the family, the model list and
         # the SDXL-only controls in step, without re-triggering itself.
         sdxl_only = [negative_prompt_accordion, performance_selection, draft_mode, render_full_button, auto_negative_prompt,
-                     refiner_col, lora_accordion, sdxl_guidance_col]
+                     refiner_col, sdxl_guidance_col]
 
         def family_selected(family, memory):
             family, choices, model, warning = modules.ui_family.select_family(
@@ -1653,9 +1664,33 @@ with shared.gradio_root:
         model_family.input(family_selected, inputs=[model_family, family_memory],
                            outputs=[model_family, base_model], queue=False, show_progress=False)
 
-        def base_model_changed(model, shown_family, memory):
+        def base_model_changed(model, shown_family, memory, *current_loras):
             family, memory, choices = modules.ui_family.model_changed(
                 model, shown_family, memory, modules.config.model_filenames)
+            # LoRAs: each dropdown lists only this family's LoRAs; each family
+            # remembers its own picks (so the SDXL offset LoRA comes back).
+            # Track the family the LoRA lists were built for separately: picking a
+            # family in the dropdown updates shown_family before this runs.
+            lora_family = memory.get('lora_family', initial_family)
+            if family != lora_family:
+                memory['lora_family'] = family
+                # Remember the old family's picks only if they are its LoRAs: after
+                # History > Load the dropdowns already hold the new family's.
+                old_options = lora_choices(lora_family)
+                if all(v in old_options for v in current_loras):
+                    memory[f'loras:{lora_family}'] = list(current_loras)
+                options = lora_choices(family)
+                # Nothing remembered yet: the preset's LoRAs (those that fit the family).
+                remembered = memory.get(f'loras:{family}') or [f for _, f, _ in modules.config.default_loras]
+                lora_updates = []
+                for i, current in enumerate(current_loras):
+                    if current != 'None' and current in options:
+                        value = current  # e.g. History > Load set this family's LoRA with the model
+                    else:
+                        value = remembered[i] if i < len(remembered) else 'None'
+                    lora_updates.append(gr.update(choices=options, value=value if value in options else 'None'))
+            else:
+                lora_updates = [gr.update() for _ in current_loras]
             sdxl = family == modules.ui_family.SDXL
             # FLUX keeps Input Image (Upscale or Variation works) but hides the
             # Image Prompt / Inpaint tabs; Krea 2 / MOSS-Image are text-to-image
@@ -1675,11 +1710,11 @@ with shared.gradio_root:
                 [gr.update(visible=sdxl)] * (len(sdxl_only) - 1)
             return ([gr.update(value=family), memory,
                      gr.update() if choices is None else gr.update(choices=choices),
-                     notice] + image_toggles + family_toggles)
+                     notice] + image_toggles + family_toggles + lora_updates)
 
-        base_model.change(base_model_changed, inputs=[base_model, model_family, family_memory],
+        base_model.change(base_model_changed, inputs=[base_model, model_family, family_memory] + lora_models,
                           outputs=[model_family, family_memory, base_model, flux_notice,
-                                   input_image_checkbox, enhance_checkbox, ip_tab, inpaint_tab] + sdxl_only,
+                                   input_image_checkbox, enhance_checkbox, ip_tab, inpaint_tab] + sdxl_only + lora_models,
                           queue=False, show_progress=False)
 
         # Gradio 5 ignores visibility updates on tabs, so also hide the Image

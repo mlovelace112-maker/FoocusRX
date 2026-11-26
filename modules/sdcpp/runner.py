@@ -36,7 +36,7 @@ class Stopped(Exception):
 
 def build_argv(binary: str, spec, model_dir: str, diffusion_name: str, *, prompt: str, negative_prompt: str,
                width: int, height: int, seed: int, steps: int, cfg: float, output: str,
-               extra_args=()) -> list:
+               extra_args=(), lora_dir: str | None = None) -> list:
     """argv for one text-to-image run (a list, never a shell string)."""
     def path(role):
         return os.path.join(model_dir, spec.file(role).name)
@@ -47,6 +47,8 @@ def build_argv(binary: str, spec, model_dir: str, diffusion_name: str, *, prompt
             '--vae', path('vae')]
     if spec.file('tokenizer') is not None:
         argv += ['--tokenizer', path('tokenizer')]
+    if lora_dir:
+        argv += ['--lora-model-dir', lora_dir]
     argv += ['-p', prompt]
     if spec.uses_negative and cfg > 1.0 and negative_prompt.strip():
         argv += ['-n', negative_prompt]
