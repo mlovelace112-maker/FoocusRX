@@ -33,6 +33,7 @@ MAIN_STATE = """(() => { const v = s => { const e = document.querySelector(s); r
   return {family: document.querySelector('#model_family input').value, model: document.querySelector('#base_model input').value,
           negative_visible: v('#negative_prompt_accordion'), render_full_visible: v('#render_full_button'),
           gallery_imgs: document.querySelectorAll('#final_gallery img').length,
+          lora_1: (document.querySelector('.lora_model input') || {}).value,
           input_image_visible: [...document.querySelectorAll('label')].some(l => l.innerText.trim() === 'Input Image' && l.offsetParent !== null),
           ip_tab_present: [...document.querySelectorAll('button[role=tab]')].some(b => b.innerText.trim() === 'Image Prompt' && b.offsetParent !== null)}; })()"""
 
@@ -110,6 +111,11 @@ class TestPage(unittest.TestCase):
         the negative prompt shows for MOSS-Image (CFG 3), not Krea 2."""
         async def scenario(page):
             states = {}
+            await page.pick_family('SDXL')
+            await page.show_advanced()  # the LoRA dropdowns render once their tab is opened
+            await page.open_tab('Models')
+            await asyncio.sleep(1.0)
+            states['start'] = await page.js(MAIN_STATE)
             for family in ('Krea 2', 'MOSS-Image'):
                 if await page.pick_family(family):
                     await asyncio.sleep(0.5)
@@ -118,9 +124,13 @@ class TestPage(unittest.TestCase):
             await asyncio.sleep(0.5)
             return states, await page.js(MAIN_STATE), page.exceptions
         states, back, exceptions = run(scenario)
+        start = states.pop('start')
         if not states:
             self.skipTest('Krea 2 / MOSS-Image are not installed')
         for family, state in states.items():
+            # LoRA lists are per family: an SDXL LoRA (e.g. the preset's offset LoRA) isn't kept.
+            if start.get('lora_1') not in (None, 'None'):
+                self.assertNotEqual(state['lora_1'], start['lora_1'], family)
             self.assertEqual(state['family'], family)
             self.assertTrue(state['model'].lower().endswith('.gguf'), state['model'])
             self.assertFalse(state['input_image_visible'], family)
@@ -129,6 +139,8 @@ class TestPage(unittest.TestCase):
             self.assertEqual(state['negative_visible'], family == 'MOSS-Image')
         self.assertEqual(back['family'], 'SDXL')
         self.assertTrue(back['input_image_visible'] and back['negative_visible'])
+        self.assertIsNotNone(start.get('lora_1'), 'LoRA dropdown not found')
+        self.assertEqual(back.get('lora_1'), start['lora_1'])  # SDXL's LoRA picks come back
         self.assertEqual(exceptions, [])
 
 

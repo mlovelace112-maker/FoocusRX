@@ -1669,8 +1669,12 @@ with shared.gradio_root:
                 model, shown_family, memory, modules.config.model_filenames)
             # LoRAs: each dropdown lists only this family's LoRAs; each family
             # remembers its own picks (so the SDXL offset LoRA comes back).
-            if family != shown_family:
-                memory[f'loras:{shown_family}'] = list(current_loras)
+            # Track the family the LoRA lists were built for separately: picking a
+            # family in the dropdown updates shown_family before this runs.
+            lora_family = memory.get('lora_family', initial_family)
+            if family != lora_family:
+                memory['lora_family'] = family
+                memory[f'loras:{lora_family}'] = list(current_loras)
                 options = lora_choices(family)
                 remembered = memory.get(f'loras:{family}') or []
                 lora_updates = []
