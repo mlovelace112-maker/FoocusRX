@@ -1306,6 +1306,9 @@ def worker():
         progressbar(async_task, 3, f'Freeing memory for {spec.family} ...')
         flux_app.unload()
         flux_app.free_sdxl()
+        pipeline.final_expansion = None  # Fooocus V2 GPT-2; rebuilt by the next SDXL refresh
+        import gc
+        gc.collect()
 
         width, height = (int(v) for v in async_task.aspect_ratios_selection.replace('×', ' ').split(' ')[:2])
         if async_task.overwrite_width > 0:
@@ -1349,6 +1352,10 @@ def worker():
                 try:
                     seconds = sdcpp_runner.run(argv, on_step=on_step, should_stop=should_stop,
                                                cwd=sdcpp_app.engine_dir())
+                except sdcpp_runner.SdcppError as exc:
+                    message = sdcpp_app.explain_error(str(exc), spec.family)
+                    progressbar(async_task, 100, message)  # shown in the UI, not only the console
+                    raise RuntimeError(message) from exc
                 except sdcpp_runner.Stopped:
                     # Stop/Skip also raised the shared interrupt flag; nothing here
                     # consumes it, so clear it or the next SDXL run stops at once.

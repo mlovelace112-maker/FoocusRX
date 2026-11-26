@@ -156,13 +156,20 @@ class TestApp(unittest.TestCase):
         self.assertFalse(app.is_json_prompt('[1, 2]'))
 
     def test_default_args(self):
-        self.assertEqual(app.default_args('darwin'), ['--auto-fit', 'off', '--mmap'])
+        self.assertEqual(app.default_args('darwin'), ['--auto-fit', 'off', '--mmap', '--flash-attn', 'on'])
         self.assertEqual(app.default_args('linux'), [])
         os.environ[app.EXTRA_ARGS_ENV] = '--vae-tiling --max-vram 8'
         try:
             self.assertEqual(app.extra_args()[-3:], ['--vae-tiling', '--max-vram', '8'])
         finally:
             del os.environ[app.EXTRA_ARGS_ENV]
+
+    def test_explain_error(self):
+        err = ('sd-cli exited with code 1:\n[E] RAM graph capacity exceeded. Requested 1 bytes\n'
+               '[E] generate failed: diffusion compute failed')
+        self.assertIn('not enough free memory', app.explain_error(err, 'Krea 2'))
+        self.assertEqual(app.explain_error('sd-cli exited with code 2:\n[E] bad model file', 'MOSS-Image'),
+                         'MOSS-Image: [E] bad model file')
 
     def test_snap16(self):
         self.assertEqual(app.snap16(1152), 1152)

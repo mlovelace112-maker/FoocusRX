@@ -33,17 +33,22 @@ SHA-256. Then click **Refresh All Files** and pick the family under
 
 ## Tuning
 
-On macOS every run passes `--auto-fit off`, which keeps all weights on
-Metal. sd-cli's automatic placement misjudges unified memory and sometimes
-fails with "RAM graph capacity exceeded ... diffusion compute failed".
-Set `FOOOCUS_SDCPP_ARGS` to pass extra `sd-cli` flags; they come after the
-defaults, so `FOOOCUS_SDCPP_ARGS="--auto-fit on"` restores the automatic
-placement. `--vae-tiling` saves memory at very large sizes but made the
-Krea 2 decode 3x slower in testing (280 s vs 92 s at 1024²).
+On macOS every run passes `--auto-fit off --mmap --flash-attn on`
+(`modules/sdcpp/app.py`, `default_args`). Without them, Krea 2 failed
+through the app on a 24 GB Mac with "RAM graph capacity exceeded ...
+diffusion compute failed". sd.cpp checks free and inactive RAM before each
+graph, and these flags keep the weights as memory-mapped, reclaimable pages
+and shrink the Krea 2 compute buffer from 3.8 GB to 1.2 GB. If a run still
+fails, the app says there is not enough free memory; close other apps and
+retry. `FOOOCUS_SDCPP_ARGS` adds more `sd-cli` flags after the defaults.
+`--vae-tiling` saves memory at very large sizes but made the Krea 2 decode
+3x slower in testing (280 s vs 92 s at 1024²).
 
-Measured on an M5 Pro (24 GB), one 1024² image including model loading:
-Krea 2 Turbo ~190 s (sampling ~95 s, VAE decode ~92 s), ~13.8 GB peak;
-MOSS-Image SFT ~620 s (50 steps), ~11.8 GB peak. Folders can be moved with `path_sdcpp`, `path_krea2` and
+Measured on an M5 Pro (24 GB), one 1024² image through the app, including
+model loading: Krea 2 Turbo ~180 s (8 steps ~85 s, VAE decode ~92 s);
+MOSS-Image SFT ~10 min at 50 steps (~137 s at 12 steps). The sd-cli
+process's own footprint stays under 0.5 GB because the weights are mapped
+from disk. Folders can be moved with `path_sdcpp`, `path_krea2` and
 `path_moss_image` in `config.txt`. Other quantisations work too: put a GGUF
 whose name starts with `Krea-2` / `MOSS-Image` next to the support files.
 

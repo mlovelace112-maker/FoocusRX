@@ -113,9 +113,27 @@ def default_args(platform: str | None = None) -> list:
       pressure instead of swapping. Measured with Krea 2: peak footprint
       13.8 GB -> 0.5 GB, load 8-33 s -> 0.2 s, same sampling speed. Without it
       a second app-driven run failed "during weight preparation" with swap full.
+    * --flash-attn on: auto picks off on Metal, but on shrinks the Krea 2
+      compute buffer at 1024x1024 from 3.8 GB to 1.2 GB and samples ~10%
+      faster, with the same image (mean pixel difference 1.3/255). sd.cpp
+      checks free + inactive RAM before each graph, so that 2.6 GB decides
+      whether Krea 2 fits next to the app on a 24 GB Mac.
     """
     import sys
-    return ['--auto-fit', 'off', '--mmap'] if (platform or sys.platform) == 'darwin' else []
+    return ['--auto-fit', 'off', '--mmap', '--flash-attn', 'on'] if (platform or sys.platform) == 'darwin' else []
+
+
+_MEMORY_ERRORS = ('capacity exceeded', 'failed during weight preparation', 'diffusion compute failed',
+                  'failed to allocate', 'out of memory')
+
+
+def explain_error(message: str, family: str) -> str:
+    """A short message for the UI; memory failures get advice."""
+    if any(m in message.lower() for m in _MEMORY_ERRORS):
+        return (f'{family}: not enough free memory for this image. Close other apps (browsers, other '
+                f'models) and try again, or pick a smaller size.')
+    last = [line for line in message.splitlines() if line.strip()][-1:] or ['sd-cli failed']
+    return f'{family}: {last[0].strip()[:200]}'
 
 
 def extra_args() -> list:
