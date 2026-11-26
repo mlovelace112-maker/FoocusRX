@@ -91,7 +91,7 @@ KREA2 = ModelSpec(
     license_requires_acceptance=True,
     notice=('**Krea 2 Turbo** (12.9B, 8 steps): natural-language prompts; describe the scene in full sentences. '
             'Uses your prompt, styles (as text), wildcards, aspect ratio, seed and image number. SDXL-only controls '
-            '(negative prompt, performance, CFG, sampler, LoRAs, refiner, input image, enhance) are hidden.'),
+            '(negative prompt, performance, CFG, sampler, refiner, input image, enhance) are hidden. LoRAs made for Krea 2 work (Advanced > Models).'),
 )
 
 MOSS_IMAGE = ModelSpec(
@@ -115,13 +115,17 @@ MOSS_IMAGE = ModelSpec(
                  '06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523'),
     ),
     steps=50, cfg=3.0, sampler='euler', scheduler='', uses_negative=True,
+    # EasyCache reuses the transformer output on steps where it barely changes:
+    # 27/50 steps skipped, sampling 493 s -> 230 s at 1024x1024 on an M5 Pro,
+    # with the multi-line sign text still exact and the image nearly identical.
+    extra_args=('--cache-mode', 'easycache'),
     license_name='Apache-2.0',
     license_url='https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/blob/main/LICENSE',
     notice=('**MOSS-Image SFT** (5B, 50 steps, CFG 3): strong at on-image text and layout. Line breaks in the prompt '
             'are kept, so multi-line sign or poster text works, and a JSON layout prompt is passed through unchanged '
             '(styles are not applied to it). Uses your prompt, negative prompt, styles, wildcards, aspect ratio, seed '
-            'and image number; Debug > "Forced Overwrite of Sampling Step" changes the step count. Slow: about two '
-            'transformer passes per step.'),
+            'and image number; Debug > "Forced Overwrite of Sampling Step" changes the step count. About 5 min per image '
+            '(two transformer passes per step; about half the steps are reused from a cache).'),
 )
 
 MODELS = (KREA2, MOSS_IMAGE)
