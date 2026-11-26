@@ -137,6 +137,9 @@ one, History delete and model downloads are disabled.
   fails on MPS today. See `docs/apple-silicon.md`.
 - **PR #37** — Ignore `*.gguf` models and the model downloader's sidecar
   files.
+- Krea 2 Turbo and MOSS-Image SFT as model families, run through
+  stable-diffusion.cpp; download with `scripts/download_sdcpp.py`. See
+  [`docs/krea2-moss-image.md`](./docs/krea2-moss-image.md).
 
 ## Upstream README
 

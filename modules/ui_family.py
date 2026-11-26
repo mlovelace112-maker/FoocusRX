@@ -1,13 +1,18 @@
-"""Model family switch (SDXL / FLUX.1) for the main UI.
+"""Model family switch (SDXL / FLUX.1 / Krea 2 / MOSS-Image) for the main UI.
 
-The family dropdown filters the base model list; picking a model of the other
+The family dropdown filters the base model list; picking a model of another
 family (from History, a preset, or loaded parameters) switches the family to
 match. Each family remembers the last model used, so switching back restores
 it. Pure functions here; webui.py turns the results into Gradio updates.
 """
+from modules.sdcpp import registry as sdcpp_registry
+
 SDXL = 'SDXL'
 FLUX = 'FLUX.1'
-FAMILIES = [SDXL, FLUX]
+KREA2 = sdcpp_registry.KREA2.family
+MOSS = sdcpp_registry.MOSS_IMAGE.family
+FAMILIES = [SDXL, FLUX, KREA2, MOSS]
+SDCPP_FAMILIES = (KREA2, MOSS)
 
 FLUX_NOTICE = ('**FLUX.1 schnell**: 4 steps, natural-language prompts. Uses your prompt, styles, aspect ratio, '
                'seed and image number; **Input Image > Upscale or Variation** does Vary and Upscale. SDXL-only '
@@ -15,10 +20,31 @@ FLUX_NOTICE = ('**FLUX.1 schnell**: 4 steps, natural-language prompts. Uses your
                'enhance) are hidden.')
 FLUX_MISSING = ('FLUX.1 is not installed. Download it (~12 GB) with: '
                 'venv/bin/python scripts/download_flux.py, then click Refresh All Files.')
+NOTICES = {FLUX: FLUX_NOTICE, KREA2: sdcpp_registry.KREA2.notice, MOSS: sdcpp_registry.MOSS_IMAGE.notice}
+MISSING = {
+    SDXL: 'No SDXL checkpoints found in the checkpoints folder.',
+    FLUX: FLUX_MISSING,
+    KREA2: ('Krea 2 is not installed. Download it (~13 GB, Krea 2 Community License) with: '
+            'venv/bin/python scripts/download_sdcpp.py krea2, then click Refresh All Files.'),
+    MOSS: ('MOSS-Image is not installed. Download it (~12 GB) with: '
+           'venv/bin/python scripts/download_sdcpp.py moss_image, then click Refresh All Files.'),
+}
 
 
 def family_of(model_name) -> str:
+    spec = sdcpp_registry.spec_for(model_name)
+    if spec is not None:
+        return spec.family
     return FLUX if str(model_name or '').lower().endswith('.gguf') else SDXL
+
+
+def is_sdxl(model_name) -> bool:
+    return family_of(model_name) == SDXL
+
+
+def uses_negative_prompt(family: str) -> bool:
+    spec = sdcpp_registry.spec_by_family(family)
+    return family == SDXL or (spec is not None and spec.uses_negative)
 
 
 def models_for(family: str, model_filenames: list) -> list:
@@ -44,9 +70,9 @@ def select_family(family: str, memory: dict, model_filenames: list):
     """
     options = models_for(family, model_filenames)
     if not options:
-        other = SDXL if family == FLUX else FLUX
-        warning = FLUX_MISSING if family == FLUX else 'No SDXL checkpoints found in the checkpoints folder.'
-        return other, None, None, warning
+        fallback = SDXL if family != SDXL else next(
+            (f for f in FAMILIES if f != SDXL and models_for(f, model_filenames)), FLUX)
+        return fallback, None, None, MISSING.get(family, f'No {family} models found.')
     remembered = (memory or {}).get(family)
     return family, options, remembered if remembered in options else options[0], None
 

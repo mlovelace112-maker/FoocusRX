@@ -1283,10 +1283,130 @@ def worker():
               f'decode {spent["decode_s"]:.1f} s)')
         async_task.processing = False
 
+    def handle_sdcpp(async_task: AsyncTask):
+        """Krea 2 / MOSS-Image (modules/sdcpp): text-to-image through a
+        stable-diffusion.cpp subprocess, one run per image. SDXL and FLUX are
+        freed first: the subprocess needs the memory (12 GB+ of weights)."""
+        import tempfile
+        import modules.flux.app as flux_app
+        import modules.sdcpp.app as sdcpp_app
+        from modules.sdcpp import registry as sdcpp_registry, runner as sdcpp_runner
+        from modules.sdxl_styles import styles as styles_table  # apply_arrays/apply_wildcards: worker scope
+
+        async_task.processing = True
+        started = time.perf_counter()
+        spec = sdcpp_registry.spec_for(async_task.base_model_name)
+        model_dir = sdcpp_app.model_dir(spec)
+        missing = ([] if sdcpp_app.engine_installed() else [sdcpp_app.engine_path()]) + \
+            sdcpp_app.missing_files(spec, model_dir)
+        if missing:
+            raise RuntimeError(f'{spec.family} is not fully installed (missing: {", ".join(missing)}). '
+                               f'Run: venv/bin/python scripts/download_sdcpp.py {spec.key}')
+
+        progressbar(async_task, 3, f'Freeing memory for {spec.family} ...')
+        flux_app.unload()
+        flux_app.free_sdxl()
+        pipeline.final_expansion = None  # Fooocus V2 GPT-2; rebuilt by the next SDXL refresh
+        import gc
+        gc.collect()
+
+        width, height = (int(v) for v in async_task.aspect_ratios_selection.replace('×', ' ').split(' ')[:2])
+        if async_task.overwrite_width > 0:
+            width = async_task.overwrite_width
+        if async_task.overwrite_height > 0:
+            height = async_task.overwrite_height
+        width, height = sdcpp_app.snap16(width), sdcpp_app.snap16(height)
+        steps = async_task.overwrite_step if async_task.overwrite_step > 0 else spec.steps
+        total = async_task.image_number
+        negative = async_task.negative_prompt if spec.uses_negative else ''
+
+        def should_stop():
+            return bool(async_task.last_stop)
+
+        for i in range(total):
+            if async_task.last_stop == 'stop':
+                break
+            seed = async_task.seed if async_task.disable_seed_increment else async_task.seed + i
+            seed %= constants.MAX_SEED + 1
+            rng = random.Random(seed)
+            # Whole prompt, line breaks kept (MOSS-Image renders multi-line text and JSON layouts).
+            prompt = apply_arrays(apply_wildcards(async_task.prompt.strip(), rng, i,
+                                                  async_task.read_wildcards_in_order), i)
+            text = sdcpp_app.build_prompt(prompt, async_task.style_selections, styles_table, rng)
+            neg_text = apply_wildcards(negative.strip(), rng, i, async_task.read_wildcards_in_order) if negative else ''
+
+            def on_step(step, n_steps, i=i):
+                done = (i + step / n_steps) / total
+                async_task.yields.append(['preview', (int(5 + 90 * done),
+                                                      f'{spec.family} step {step}/{n_steps}, image {i + 1}/{total} ...',
+                                                      None)])
+
+            progressbar(async_task, int(5 + 90 * i / total),
+                        f'Loading {spec.family} and encoding prompt for image {i + 1}/{total} ...')
+            with tempfile.TemporaryDirectory(prefix='foocusrx-sdcpp-') as tmp:
+                output = os.path.join(tmp, 'out.png')
+                argv = sdcpp_runner.build_argv(
+                    sdcpp_app.engine_path(), spec, model_dir, os.path.basename(async_task.base_model_name),
+                    prompt=text, negative_prompt=neg_text, width=width, height=height, seed=seed, steps=steps,
+                    cfg=spec.cfg, output=output, extra_args=sdcpp_app.extra_args())
+                try:
+                    seconds = sdcpp_runner.run(argv, on_step=on_step, should_stop=should_stop,
+                                               cwd=sdcpp_app.engine_dir())
+                except sdcpp_runner.SdcppError as exc:
+                    message = sdcpp_app.explain_error(str(exc), spec.family)
+                    progressbar(async_task, 100, message)  # shown in the UI, not only the console
+                    raise RuntimeError(message) from exc
+                except sdcpp_runner.Stopped:
+                    # Stop/Skip also raised the shared interrupt flag; nothing here
+                    # consumes it, so clear it or the next SDXL run stops at once.
+                    ldm_patched.modules.model_management.interrupt_current_processing(False)
+                    if async_task.last_stop == 'skip':
+                        print('User skipped')
+                        async_task.last_stop = False
+                        continue
+                    print('User stopped')
+                    break
+                bgr = cv2.imread(output, cv2.IMREAD_COLOR)
+                if bgr is None:
+                    raise RuntimeError(f'{spec.family}: sd-cli finished but wrote no image')
+                image = HWC3(bgr[:, :, ::-1].copy())
+            print(f'[sd.cpp] {spec.family} image {i + 1}/{total}: {seconds:.1f} s')
+
+            # Censor before saving, as the FLUX path does.
+            if modules.config.default_black_out_nsfw or async_task.black_out_nsfw:
+                progressbar(async_task, int(5 + 90 * (i + 1) / total), 'Checking for NSFW content ...')
+                image = default_censor(image)
+
+            # Family-specific keys for steps/CFG/sampler (as for FLUX): the SDXL
+            # "steps"/"guidance_scale"/"sampler" keys would be loaded into the
+            # SDXL controls by "Load these settings".
+            metadata = [
+                ('Prompt', 'prompt', prompt),
+                *([('Negative Prompt', 'negative_prompt', neg_text)] if spec.uses_negative else []),
+                ('Full prompt', 'full_prompt', text),
+                ('Styles', 'styles', str([s for s in async_task.style_selections if s != 'Fooocus V2'])),
+                ('Resolution', 'resolution', str((image.shape[1], image.shape[0]))),
+                ('Seed', 'seed', str(seed)),
+                ('Base Model', 'base_model', async_task.base_model_name),
+                (f'{spec.family} steps', 'sdcpp_steps', steps),
+                (f'{spec.family} CFG', 'sdcpp_cfg', spec.cfg),
+                (f'{spec.family} sampler', 'sdcpp_sampler', f'{spec.sampler} {spec.scheduler or "default"}'),
+                ('Version', 'version', f'FoocusRX {spec.family} (stable-diffusion.cpp '
+                                       f'{sdcpp_registry.ENGINE_VERSION})'),
+            ]
+            path = log(image, metadata, metadata_parser=None, output_format=async_task.output_format)
+            yield_result(async_task, [path], int(5 + 90 * (i + 1) / total), async_task.black_out_nsfw, censor=False)
+
+        print(f'[sd.cpp] {total} image(s) in {time.perf_counter() - started:.1f} s')
+        async_task.processing = False
+
     def handler(async_task: AsyncTask):
         import modules.flux.app as flux_app
+        import modules.sdcpp.app as sdcpp_app
         if flux_app.is_flux(async_task.base_model_name):
             return handle_flux(async_task)
+        if sdcpp_app.is_sdcpp(async_task.base_model_name):
+            return handle_sdcpp(async_task)
         flux_app.unload()  # Flux and SDXL don't fit in memory together on 24 GB
 
         preparation_start_time = time.perf_counter()
@@ -1722,8 +1842,8 @@ def worker():
             if task.generate_image_grid:
                 build_image_wall(task)
             task.yields.append(['finish', task.results])
-            import modules.flux.app as flux_app
-            if not flux_app.is_flux(task.base_model_name):  # SDXL was freed for Flux; nothing to warm up
+            import modules.ui_family as ui_family
+            if ui_family.is_sdxl(task.base_model_name):  # SDXL was freed for FLUX/sd.cpp; nothing to warm up
                 pipeline.prepare_text_encoder(async_call=True)
         except BaseException:
             # Deliberately broad: this is the only generation thread, so it

@@ -105,6 +105,32 @@ class TestPage(unittest.TestCase):
             self.assertEqual(back['model'], start['model'])  # remembered per family
         self.assertEqual(exceptions, [])
 
+    def test_sdcpp_families(self):
+        """Krea 2 / MOSS-Image (stable-diffusion.cpp): text-to-image only;
+        the negative prompt shows for MOSS-Image (CFG 3), not Krea 2."""
+        async def scenario(page):
+            states = {}
+            for family in ('Krea 2', 'MOSS-Image'):
+                if await page.pick_family(family):
+                    await asyncio.sleep(0.5)
+                    states[family] = await page.js(MAIN_STATE)
+            await page.pick_family('SDXL')
+            await asyncio.sleep(0.5)
+            return states, await page.js(MAIN_STATE), page.exceptions
+        states, back, exceptions = run(scenario)
+        if not states:
+            self.skipTest('Krea 2 / MOSS-Image are not installed')
+        for family, state in states.items():
+            self.assertEqual(state['family'], family)
+            self.assertTrue(state['model'].lower().endswith('.gguf'), state['model'])
+            self.assertFalse(state['input_image_visible'], family)
+            self.assertFalse(state['ip_tab_present'], family)
+            self.assertFalse(state['render_full_visible'], family)
+            self.assertEqual(state['negative_visible'], family == 'MOSS-Image')
+        self.assertEqual(back['family'], 'SDXL')
+        self.assertTrue(back['input_image_visible'] and back['negative_visible'])
+        self.assertEqual(exceptions, [])
+
 
 @unittest.skipUnless(URL, 'set FOOOCUS_E2E_URL to run browser tests')
 class TestHistory(unittest.TestCase):
