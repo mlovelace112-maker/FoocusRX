@@ -101,6 +101,24 @@ def snap16(value: int) -> int:
     return max(256, 16 * int(round(value / 16)))
 
 
+def default_args(platform: str | None = None) -> list:
+    """sd-cli flags added to every run, for Apple Silicon (unified memory):
+
+    * --auto-fit off keeps all weights on Metal. sd-cli's auto-fit (default
+      on) misjudges unified memory and sometimes spills part of the model to a
+      zero-sized "RAM" budget ("RAM graph capacity exceeded ... diffusion
+      compute failed", seen with Krea 2 on a 24 GB M5 Pro).
+    * --mmap maps the weights from disk instead of copying them: Metal uses the
+      mapped pages directly, so they are clean file pages macOS can drop under
+      pressure instead of swapping. Measured with Krea 2: peak footprint
+      13.8 GB -> 0.5 GB, load 8-33 s -> 0.2 s, same sampling speed. Without it
+      a second app-driven run failed "during weight preparation" with swap full.
+    """
+    import sys
+    return ['--auto-fit', 'off', '--mmap'] if (platform or sys.platform) == 'darwin' else []
+
+
 def extra_args() -> list:
+    """default_args() plus FOOOCUS_SDCPP_ARGS (later flags win in sd-cli)."""
     import shlex
-    return shlex.split(os.environ.get(EXTRA_ARGS_ENV, ''))
+    return default_args() + shlex.split(os.environ.get(EXTRA_ARGS_ENV, ''))

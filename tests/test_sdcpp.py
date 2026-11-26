@@ -155,6 +155,15 @@ class TestApp(unittest.TestCase):
         self.assertFalse(app.is_json_prompt('{not json'))
         self.assertFalse(app.is_json_prompt('[1, 2]'))
 
+    def test_default_args(self):
+        self.assertEqual(app.default_args('darwin'), ['--auto-fit', 'off', '--mmap'])
+        self.assertEqual(app.default_args('linux'), [])
+        os.environ[app.EXTRA_ARGS_ENV] = '--vae-tiling --max-vram 8'
+        try:
+            self.assertEqual(app.extra_args()[-3:], ['--vae-tiling', '--max-vram', '8'])
+        finally:
+            del os.environ[app.EXTRA_ARGS_ENV]
+
     def test_snap16(self):
         self.assertEqual(app.snap16(1152), 1152)
         self.assertEqual(app.snap16(1003), 1008)

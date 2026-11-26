@@ -33,9 +33,17 @@ SHA-256. Then click **Refresh All Files** and pick the family under
 
 ## Tuning
 
-Set `FOOOCUS_SDCPP_ARGS` to pass extra `sd-cli` flags, for example
-`FOOOCUS_SDCPP_ARGS="--vae-tiling"` if VAE decoding runs out of memory at
-large sizes. Folders can be moved with `path_sdcpp`, `path_krea2` and
+On macOS every run passes `--auto-fit off`, which keeps all weights on
+Metal. sd-cli's automatic placement misjudges unified memory and sometimes
+fails with "RAM graph capacity exceeded ... diffusion compute failed".
+Set `FOOOCUS_SDCPP_ARGS` to pass extra `sd-cli` flags; they come after the
+defaults, so `FOOOCUS_SDCPP_ARGS="--auto-fit on"` restores the automatic
+placement. `--vae-tiling` saves memory at very large sizes but made the
+Krea 2 decode 3x slower in testing (280 s vs 92 s at 1024²).
+
+Measured on an M5 Pro (24 GB), one 1024² image including model loading:
+Krea 2 Turbo ~190 s (sampling ~95 s, VAE decode ~92 s), ~13.8 GB peak;
+MOSS-Image SFT ~620 s (50 steps), ~11.8 GB peak. Folders can be moved with `path_sdcpp`, `path_krea2` and
 `path_moss_image` in `config.txt`. Other quantisations work too: put a GGUF
 whose name starts with `Krea-2` / `MOSS-Image` next to the support files.
 
