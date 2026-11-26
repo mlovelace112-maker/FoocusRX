@@ -1,3 +1,6 @@
+import platform
+import sys
+
 import ldm_patched.modules.args_parser as args_parser
 
 args_parser.parser.add_argument("--share", action='store_true', help="Set whether to share on Gradio.")
@@ -49,7 +52,19 @@ args_parser.parser.set_defaults(
 args_parser.args = args_parser.parser.parse_args()
 
 # (Disable by default because of issues like https://github.com/lllyasviel/Fooocus/issues/724)
-args_parser.args.always_offload_from_vram = not args_parser.args.disable_offload_from_vram
+# Apple Silicon: never offload by default. GPU and CPU share one memory pool,
+# so "offloading" only copies weights within the same RAM; with it on, every
+# model load evicted the others and each SDXL image re-moved its UNet (7-14 s).
+# scripts/mac_launch.sh always passed --disable-offload-from-vram, but the
+# FoocusRX.app / foocusrx.py launcher did not. --always-offload-from-vram still
+# forces it.
+def always_offload(forced: bool, disabled: bool, unified_memory: bool) -> bool:
+    return forced or (not disabled and not unified_memory)
+
+
+args_parser.args.always_offload_from_vram = always_offload(
+    args_parser.args.always_offload_from_vram, args_parser.args.disable_offload_from_vram,
+    sys.platform == 'darwin' and platform.machine() == 'arm64')
 
 if args_parser.args.disable_analytics:
     import os
