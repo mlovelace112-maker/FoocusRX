@@ -28,8 +28,31 @@ SHA-256. Then click **Refresh All Files** and pick the family under
 - MOSS-Image also uses the negative prompt, keeps line breaks (multi-line
   sign or poster text), and passes a JSON layout prompt through unchanged.
 - Debug > "Forced Overwrite of Sampling Step" overrides the step count.
+- LoRAs made for the family (see [LoRAs](#loras)).
 - Not available for these families: input image (vary / upscale /
-  inpaint), image prompt, LoRAs, refiner, enhance.
+  inpaint), image prompt, refiner, enhance.
+
+## LoRAs
+
+Every family (SDXL, FLUX.1, Krea 2, MOSS-Image) takes LoRAs from the usual
+LoRA folders. Under Advanced > Models each LoRA dropdown lists only the
+LoRAs made for the selected family, recognised from the tensor names in the
+file; each family remembers its own picks. `<lora:NAME:WEIGHT>` in the
+prompt works too. A LoRA made for another family (for example the default
+preset's SDXL offset LoRA after switching to Krea 2) is skipped, and the
+progress bar says so. The LoRAs used are saved with the image, so History >
+Load restores them.
+
+- Krea 2 and MOSS-Image: applied by stable-diffusion.cpp (diffusers,
+  ComfyUI and PEFT naming). Tested: Comfy-Org's Krea 2 style LoRAs and
+  MOSS-Image LoRAs in both ComfyUI (`diffusion_model.layers...`) and
+  diffusers (`transformer.layers...`) form; all tensors applied.
+- FLUX.1: applied as runtime low-rank terms on the quantized transformer
+  (`modules/flux/lora.py`): kohya/ComfyUI (`lora_unet_double_blocks_...`),
+  BFL/ComfyUI PEFT (`double_blocks....lora_A`) and diffusers
+  (`transformer_blocks....to_q`, mapped onto the fused q/k/v and MLP
+  layers). Text-encoder parts of a LoRA are ignored. About 4% slower per
+  step with a typical LoRA.
 
 ## Tuning
 
@@ -45,8 +68,12 @@ retry. `FOOOCUS_SDCPP_ARGS` adds more `sd-cli` flags after the defaults.
 3x slower in testing (280 s vs 92 s at 1024²).
 
 Measured on an M5 Pro (24 GB), one 1024² image through the app, including
-model loading: Krea 2 Turbo ~180 s (8 steps ~85 s, VAE decode ~92 s);
-MOSS-Image SFT ~10 min at 50 steps (~137 s at 12 steps). The sd-cli
+model loading: Krea 2 Turbo ~180 s (8 steps ~85 s, VAE decode ~92 s; the
+decode is the engine's Wan VAE on Metal, and `--conv-direct` did not help);
+MOSS-Image SFT ~4-5 min at 50 steps. MOSS-Image runs with
+`--cache-mode easycache` (`registry.MOSS_IMAGE.extra_args`), which reuses
+the transformer on about half the steps: sampling 493 s -> 230 s with the
+same sign text and a nearly identical image. The sd-cli
 process's own footprint stays under 0.5 GB because the weights are mapped
 from disk. Folders can be moved with `path_sdcpp`, `path_krea2` and
 `path_moss_image` in `config.txt`. Other quantisations work too: put a GGUF

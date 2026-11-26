@@ -14,7 +14,7 @@ FLUX_MODEL_NAME = 'flux1-schnell-Q4_K_S.gguf'
 UNSUPPORTED_NOTICE = (
     'FLUX.1 schnell: 4-step text-to-image, plus Vary and Upscale from Input Image > Upscale or Variation. '
     'Uses your prompt, styles (as text), wildcards, aspect ratio, seed and image number. Not used with Flux: '
-    'negative prompt, guidance scale/CFG, sharpness, sampler, performance, LoRAs, refiner, Fooocus V2 '
+    'negative prompt, guidance scale/CFG, sharpness, sampler, performance, refiner, Fooocus V2 '
     'expansion, image prompt, inpaint/outpaint, enhance.'
 )
 # Input Image > "Upscale or Variation" with FLUX: strength (share of the

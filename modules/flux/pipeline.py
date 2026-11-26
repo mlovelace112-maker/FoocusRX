@@ -146,6 +146,30 @@ class FluxSchnell:
         self.vae = None
         self._text_cache = {}  # prompt -> (txt, vec) on CPU
         self.timings = FluxTimings()
+        self.loras = []  # [(path, weight)] applied as forward hooks (modules/flux/lora.py)
+        self._lora_hooks = None
+        self.lora_report = []
+
+    def set_loras(self, loras: list) -> None:
+        """LoRAs for the next generations: [(path, weight), ...]."""
+        loras = [(p, float(w)) for p, w in loras]
+        if loras == self.loras:
+            return
+        self.loras = loras
+        self._remove_loras()
+        if self.transformer is not None:
+            self._apply_loras()
+
+    def _apply_loras(self):
+        from modules.flux.lora import LoraHooks
+        self._lora_hooks = LoraHooks()
+        self.lora_report = self._lora_hooks.apply(self.transformer, self.loras, self.device, self.dtype) \
+            if self.loras else []
+
+    def _remove_loras(self):
+        if self._lora_hooks is not None:
+            self._lora_hooks.remove()
+            self._lora_hooks = None
 
     def _path(self, key):
         return os.path.join(self.dir, FILES[key])
@@ -180,6 +204,7 @@ class FluxSchnell:
                 model = Flux()
             self.transformer = gguf_ops.load_into(model, gguf_ops.read_gguf(self._path('transformer')),
                                                   self.device, self.dtype)
+            self._apply_loras()  # a reloaded transformer needs its hooks again
             self.timings.load_s += time.perf_counter() - t
         if self.vae is None:
             from safetensors.torch import load_file
@@ -190,10 +215,12 @@ class FluxSchnell:
 
     def unload_transformer(self):
         if self.transformer is not None:
+            self._remove_loras()
             self.transformer = None
             _free()
 
     def unload(self):
+        self._remove_loras()
         self.transformer = None
         self.vae = None
         self._text_cache.clear()

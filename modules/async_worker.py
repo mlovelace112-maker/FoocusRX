@@ -1235,6 +1235,10 @@ def worker():
             rng = random.Random(seed)
             prompt = ', '.join(apply_arrays(apply_wildcards(line, rng, i, async_task.read_wildcards_in_order), i)
                                for line in prompt_lines)
+            from modules.sdcpp.app import extract_prompt_loras
+            prompt, prompt_loras = extract_prompt_loras(prompt, modules.config.lora_filenames)
+            loras = family_loras('FLUX.1', prompt_loras, async_task)
+            flux.set_loras([(resolve_lora(n), w) for n, w in loras])
             text = flux_app.build_prompt(prompt, async_task.style_selections, styles_table, rng)
             quality_added = ''
             if getattr(async_task, 'auto_quality', False):
@@ -1294,6 +1298,7 @@ def worker():
                 *([('Auto quality prompts', 'auto_quality_prompts', 'flux')] if quality_added else []),
                 *([('FLUX image mode', 'flux_image_mode', mode_label)] if mode_label else []),
                 ('FLUX sampler', 'flux_sampler', 'flow-matching euler'),
+                *lora_metadata(loras),
                 ('Version', 'version', 'FoocusRX FLUX.1 schnell'),
             ]
             path = log(image, metadata, metadata_parser=None, output_format=async_task.output_format)
