@@ -43,7 +43,7 @@ history_index = modules.history.HistoryIndex()
 
 def refiner_choices():
     """Refiners must be SDXL/SD1.5 checkpoints; FLUX.1 can't refine."""
-    return ['None'] + [m for m in modules.config.model_filenames if not modules.flux.app.is_flux(m)]
+    return ['None'] + [m for m in modules.config.model_filenames if modules.ui_family.is_sdxl(m)]
 
 # Delete / model download are off when the app is reachable without a login.
 FILE_ACTIONS_LOCKED = modules.security.file_actions_locked(args_manager.args.listen, args_manager.args.share,
@@ -286,10 +286,10 @@ with shared.gradio_root:
                                          elem_id='base_model')
             family_memory = gr.State(modules.ui_family.initial_memory(modules.config.default_base_model_name,
                                                                       modules.config.model_filenames))
-            flux_notice = gr.Markdown(value=modules.ui_family.FLUX_NOTICE, elem_classes='rx-notice',
-                                      visible=initial_family == modules.ui_family.FLUX)
+            flux_notice = gr.Markdown(value=modules.ui_family.NOTICES.get(initial_family, modules.ui_family.FLUX_NOTICE),
+                                      elem_classes='rx-notice', visible=initial_family != modules.ui_family.SDXL)
             with gr.Accordion(label='Negative prompt', open=False, elem_id='negative_prompt_accordion',
-                              visible=initial_family != modules.ui_family.FLUX) as negative_prompt_accordion:
+                              visible=modules.ui_family.uses_negative_prompt(initial_family)) as negative_prompt_accordion:
                 negative_prompt = gr.Textbox(show_label=False, placeholder='What you do not want to see',
                                              lines=2, elem_id='negative_prompt', container=False,
                                              value=modules.config.default_prompt_negative)
@@ -696,7 +696,7 @@ with shared.gradio_root:
                     draft_mode = gr.Checkbox(label='Draft mode (fast previews)', value=False,
                                              info=f'{modules.draft_mode.DRAFT_STEPS}-step drafts, ~2.5x faster. '
                                                   'Pick one, then “Render full quality”.',
-                                             visible=initial_family != modules.ui_family.FLUX)
+                                             visible=initial_family == modules.ui_family.SDXL)
                     prompt_queue = gr.Checkbox(label='Prompt queue', value=False,
                                                info='Each prompt line becomes its own generation.')
                 draft_request = gr.State(None)       # {'mode': 'full', 'seed': int} for one run
@@ -796,7 +796,7 @@ with shared.gradio_root:
                                                       value=True, container=False)
                     auto_model_settings_status = gr.Markdown(value='', elem_classes='rx-status')
 
-                with gr.Column(visible=initial_family != modules.ui_family.FLUX) as refiner_col:
+                with gr.Column(visible=initial_family == modules.ui_family.SDXL) as refiner_col:
                     refiner_model = gr.Dropdown(label='Refiner (SDXL or SD 1.5)', choices=refiner_choices(), value=modules.config.default_refiner_model_name, show_label=True)
 
                     refiner_switch = gr.Slider(label='Refiner Switch At', minimum=0.1, maximum=1.0, step=0.0001,
@@ -811,7 +811,7 @@ with shared.gradio_root:
                                          inputs=refiner_model, outputs=refiner_switch, show_progress=False, queue=False)
 
                 with gr.Accordion(label='LoRAs', open=any(e and f != 'None' for e, f, _ in modules.config.default_loras),
-                                  visible=initial_family != modules.ui_family.FLUX) as lora_accordion:
+                                  visible=initial_family == modules.ui_family.SDXL) as lora_accordion:
                     lora_ctrls = []
 
                     for i, (enabled, filename, weight) in enumerate(modules.config.default_loras):
@@ -852,7 +852,7 @@ with shared.gradio_root:
                         gr.Markdown(modules.security.LOCKED_MESSAGE, elem_classes='rx-notice')
                     model_download_status = gr.Textbox(label='Status', interactive=False, lines=2)
             with gr.Tab(label='Advanced'):
-                with gr.Column(visible=initial_family != modules.ui_family.FLUX) as sdxl_guidance_col:
+                with gr.Column(visible=initial_family == modules.ui_family.SDXL) as sdxl_guidance_col:
                     guidance_scale = gr.Slider(label='Guidance Scale', minimum=1.0, maximum=30.0, step=0.01,
                                                value=modules.config.default_cfg_scale,
                                                info='Higher value means style is cleaner, vivider, and more artistic.')
@@ -1656,15 +1656,26 @@ with shared.gradio_root:
         def base_model_changed(model, shown_family, memory):
             family, memory, choices = modules.ui_family.model_changed(
                 model, shown_family, memory, modules.config.model_filenames)
-            sdxl = family != modules.ui_family.FLUX
+            sdxl = family == modules.ui_family.SDXL
             # FLUX keeps Input Image (Upscale or Variation works) but hides the
-            # Image Prompt / Inpaint tabs; Enhance is unticked so nothing stays on hidden.
-            image_toggles = [gr.update(visible=True), gr.update(visible=True)] if sdxl else \
-                [gr.update(visible=True), gr.update(visible=False, value=False)]
+            # Image Prompt / Inpaint tabs; Krea 2 / MOSS-Image are text-to-image
+            # only, so Input Image goes too. Hidden toggles are unticked so
+            # nothing stays on out of sight.
+            if sdxl:
+                image_toggles = [gr.update(visible=True), gr.update(visible=True)]
+            elif family == modules.ui_family.FLUX:
+                image_toggles = [gr.update(visible=True), gr.update(visible=False, value=False)]
+            else:
+                image_toggles = [gr.update(visible=False, value=False), gr.update(visible=False, value=False)]
             image_toggles += [gr.update(visible=sdxl), gr.update(visible=sdxl)]  # ip_tab, inpaint_tab
+            notice = gr.update(visible=False) if sdxl else \
+                gr.update(visible=True, value=modules.ui_family.NOTICES.get(family, ''))
+            # Negative prompt also applies to MOSS-Image (CFG 3); the rest is SDXL-only.
+            family_toggles = [gr.update(visible=modules.ui_family.uses_negative_prompt(family))] + \
+                [gr.update(visible=sdxl)] * (len(sdxl_only) - 1)
             return ([gr.update(value=family), memory,
                      gr.update() if choices is None else gr.update(choices=choices),
-                     gr.update(visible=not sdxl)] + image_toggles + [gr.update(visible=sdxl)] * len(sdxl_only))
+                     notice] + image_toggles + family_toggles)
 
         base_model.change(base_model_changed, inputs=[base_model, model_family, family_memory],
                           outputs=[model_family, family_memory, base_model, flux_notice,
@@ -1680,7 +1691,7 @@ with shared.gradio_root:
                          "s = document.createElement('style'); s.id = 'rx-flux-style'; "
                          f"s.textContent = '{_flux_tab_css} {{ display: none !important; }}'; "
                          "document.head.appendChild(s); } "
-                         "document.body.classList.toggle('rx-flux', family === 'FLUX.1'); return []; }")
+                         "document.body.classList.toggle('rx-flux', !!family && family !== 'SDXL'); return []; }")
         model_family.change(None, inputs=model_family, queue=False, show_progress=False, **gc.js_kwarg(flux_class_js))
         shared.gradio_root.load(None, inputs=model_family, queue=False, show_progress=False,
                                 **gc.js_kwarg(flux_class_js))

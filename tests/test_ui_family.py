@@ -46,5 +46,44 @@ class TestFamily(unittest.TestCase):
         self.assertEqual(memory2[uf.FLUX], 'flux1-schnell-Q4_K_S.gguf')
 
 
+ALL = MODELS + ['Krea-2-Turbo-Q5_K_S.gguf', 'MOSS-Image-SFT-Q8_0.gguf']
+
+
+class TestSdcppFamilies(unittest.TestCase):
+    def test_gguf_names_resolve_to_their_family(self):
+        self.assertEqual(uf.family_of('Krea-2-Turbo-Q5_K_S.gguf'), uf.KREA2)
+        self.assertEqual(uf.family_of('MOSS-Image-SFT-Q8_0.gguf'), uf.MOSS)
+        self.assertEqual(uf.family_of('flux1-schnell-Q4_K_S.gguf'), uf.FLUX)  # other GGUFs stay FLUX
+        self.assertEqual(uf.models_for(uf.KREA2, ALL), ['Krea-2-Turbo-Q5_K_S.gguf'])
+        self.assertEqual(uf.models_for(uf.FLUX, ALL), ['flux1-schnell-Q4_K_S.gguf'])
+        self.assertTrue(uf.is_sdxl('ponyDiffusionV6XL.safetensors'))
+        self.assertFalse(uf.is_sdxl('MOSS-Image-SFT-Q8_0.gguf'))
+
+    def test_negative_prompt_families(self):
+        self.assertTrue(uf.uses_negative_prompt(uf.SDXL))
+        self.assertTrue(uf.uses_negative_prompt(uf.MOSS))
+        self.assertFalse(uf.uses_negative_prompt(uf.KREA2))
+        self.assertFalse(uf.uses_negative_prompt(uf.FLUX))
+
+    def test_select_missing_sdcpp_family(self):
+        family, choices, model, warning = uf.select_family(uf.KREA2, {}, MODELS)
+        self.assertEqual((family, choices, model), (uf.SDXL, None, None))
+        self.assertIn('download_sdcpp.py krea2', warning)
+        _, _, _, warning = uf.select_family(uf.MOSS, {}, MODELS)
+        self.assertIn('download_sdcpp.py moss_image', warning)
+
+    def test_select_and_switch(self):
+        family, choices, model, _ = uf.select_family(uf.MOSS, {}, ALL)
+        self.assertEqual((family, choices, model), (uf.MOSS, ['MOSS-Image-SFT-Q8_0.gguf'], 'MOSS-Image-SFT-Q8_0.gguf'))
+        family, memory, choices = uf.model_changed('Krea-2-Turbo-Q5_K_S.gguf', uf.MOSS, {}, ALL)
+        self.assertEqual((family, choices), (uf.KREA2, ['Krea-2-Turbo-Q5_K_S.gguf']))
+        self.assertEqual(set(uf.initial_memory(None, ALL)), set(uf.FAMILIES))
+
+    def test_no_sdxl_falls_back_to_installed_family(self):
+        family, _, model, warning = uf.select_family(uf.SDXL, {}, ['MOSS-Image-SFT-Q8_0.gguf'])
+        self.assertEqual((family, model), (uf.MOSS, None))
+        self.assertIn('SDXL', warning)
+
+
 if __name__ == '__main__':
     unittest.main()

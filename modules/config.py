@@ -202,6 +202,9 @@ path_wildcards = get_dir_or_set_default('path_wildcards', '../wildcards/')
 path_safety_checker = get_dir_or_set_default('path_safety_checker', '../models/safety_checker/')
 path_sam = get_dir_or_set_default('path_sam', '../models/sam/')
 path_flux = get_dir_or_set_default('path_flux', '../models/flux/')  # FLUX.1 schnell (modules/flux)
+path_sdcpp = get_dir_or_set_default('path_sdcpp', '../models/sdcpp/')  # stable-diffusion.cpp engine (modules/sdcpp)
+path_krea2 = get_dir_or_set_default('path_krea2', '../models/krea2/')  # Krea 2 Turbo (modules/sdcpp)
+path_moss_image = get_dir_or_set_default('path_moss_image', '../models/moss_image/')  # MOSS-Image SFT (modules/sdcpp)
 path_prompt_model = get_dir_or_set_default('path_prompt_model', '../models/llm/')  # AI prompt rewriter
 path_outputs = get_path_output()
 
@@ -820,6 +823,11 @@ def update_files():
         model_filenames += model_choices(path_flux)
     except Exception as exc:
         print(f'[flux] not available: {exc}')
+    try:  # Krea 2 / MOSS-Image appear when the sd.cpp engine and their files are present
+        from modules.sdcpp.app import model_choices as sdcpp_model_choices
+        model_filenames += sdcpp_model_choices()
+    except Exception as exc:
+        print(f'[sd.cpp] not available: {exc}')
     lora_filenames = get_model_filenames(paths_loras)
     vae_filenames = get_model_filenames(path_vae)
     wildcard_filenames = get_files_from_folder(path_wildcards, ['.txt'])
