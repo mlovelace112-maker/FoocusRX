@@ -78,3 +78,8 @@ outputs-e2e-trash/
 /venv.bak-*
 /venv.failed-*
 /venv-candidate
+
+# stable-diffusion.cpp engine and its model support files (scripts/download_sdcpp.py)
+/models/sdcpp/
+/models/krea2/
+/models/moss_image/
