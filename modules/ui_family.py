@@ -42,9 +42,15 @@ def is_sdxl(model_name) -> bool:
     return family_of(model_name) == SDXL
 
 
-def uses_negative_prompt(family: str) -> bool:
+def uses_negative_prompt(family: str, model=None) -> bool:
+    """Whether the negative prompt applies: SDXL, and sd.cpp checkpoints that
+    sample with CFG (MOSS-Image SFT, Krea 2 Raw/Base; not the distilled ones)."""
     spec = sdcpp_registry.spec_by_family(family)
-    return family == SDXL or (spec is not None and spec.uses_negative)
+    if family == SDXL:
+        return True
+    if spec is None:
+        return False
+    return spec.settings_for(model)['uses_negative'] if model else spec.uses_negative
 
 
 def models_for(family: str, model_filenames: list) -> list:

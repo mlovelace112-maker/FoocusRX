@@ -48,7 +48,13 @@ def lora_choices(family):
     """'None' plus the LoRA files made for ``family`` (by their tensor names)."""
     return ['None'] + modules.lora_family.loras_for(
         family, modules.config.lora_filenames,
-        lambda name: modules.util.get_file_from_folder_list(name, modules.config.paths_loras))
+        modules.config.resolve_lora)
+
+
+def lora_note_text(family):
+    """Under the LoRA dropdowns: how many LoRAs fit this model family and which
+    ones are hidden because they were made for another model."""
+    return modules.lora_family.panel_note(family, modules.config.lora_filenames, modules.config.resolve_lora)
 
 
 def refiner_choices():
@@ -845,6 +851,7 @@ with shared.gradio_root:
                                                     maximum=modules.config.default_loras_max_weight, step=0.01, value=weight,
                                                     elem_classes='lora_weight', scale=5)
                             lora_ctrls += [lora_enabled, lora_model, lora_weight]
+                    lora_note = gr.Markdown(value=lora_note_text(initial_family), elem_classes='lora_note')
 
                 with gr.Row():
                     refresh_files = gr.Button(value='\U0001f504 Refresh All Files', variant='secondary', elem_classes='refresh_button')
@@ -1064,12 +1071,12 @@ with shared.gradio_root:
                         results += [gr.update(choices=modules.config.available_presets)]
                     for i in range(modules.config.default_max_lora_number):
                         results += [gr.update(interactive=True), gr.update(choices=lora_choices(family)), gr.update()]
-                    return results
+                    return results + [gr.update(value=lora_note_text(family))]
 
                 refresh_files_output = [base_model, refiner_model, vae_name]
                 if not args_manager.args.disable_preset_selection:
                     refresh_files_output += [preset_selection]
-                refresh_files.click(refresh_files_clicked, [model_family], refresh_files_output + lora_ctrls,
+                refresh_files.click(refresh_files_clicked, [model_family], refresh_files_output + lora_ctrls + [lora_note],
                                     queue=False, show_progress=False)
 
                 def model_manager_list():
@@ -1113,7 +1120,7 @@ with shared.gradio_root:
                     model_download_clicked,
                     inputs=[model_download_url, model_download_kind, model_download_name, model_download_sha],
                     outputs=model_download_status) \
-                    .then(refresh_files_clicked, [model_family], refresh_files_output + lora_ctrls, queue=False, show_progress=False) \
+                    .then(refresh_files_clicked, [model_family], refresh_files_output + lora_ctrls + [lora_note], queue=False, show_progress=False) \
                     .then(model_manager_list, outputs=model_manager_table, queue=False, show_progress=False)
 
             with gr.Tab(label='History') as history_tab:
@@ -1725,15 +1732,17 @@ with shared.gradio_root:
             notice = gr.update(visible=False) if sdxl else \
                 gr.update(visible=True, value=modules.ui_family.NOTICES.get(family, ''))
             # Negative prompt also applies to MOSS-Image (CFG 3); the rest is SDXL-only.
-            family_toggles = [gr.update(visible=modules.ui_family.uses_negative_prompt(family))] + \
+            family_toggles = [gr.update(visible=modules.ui_family.uses_negative_prompt(family, model))] + \
                 [gr.update(visible=sdxl)] * (len(sdxl_only) - 1)
             return ([gr.update(value=family), memory,
                      gr.update() if choices is None else gr.update(choices=choices),
-                     notice] + image_toggles + family_toggles + lora_updates)
+                     notice] + image_toggles + family_toggles + lora_updates
+                    + [gr.update(value=lora_note_text(family))])
 
         base_model.change(base_model_changed, inputs=[base_model, model_family, family_memory] + lora_models,
                           outputs=[model_family, family_memory, base_model, flux_notice,
-                                   input_image_checkbox, enhance_checkbox, ip_tab, inpaint_tab] + sdxl_only + lora_models,
+                                   input_image_checkbox, enhance_checkbox, ip_tab, inpaint_tab] + sdxl_only + lora_models
+                                  + [lora_note],
                           queue=False, show_progress=False)
 
         # Gradio 5 ignores visibility updates on tabs, so also hide the Image

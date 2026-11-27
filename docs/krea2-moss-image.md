@@ -32,12 +32,45 @@ SHA-256. Then click **Refresh All Files** and pick the family under
 - Not available for these families: input image (vary / upscale /
   inpaint), image prompt, refiner, enhance.
 
+## More models
+
+Every Krea 2 and MOSS-Image checkpoint you download is listed under
+**Model family**, whatever its file name: other quantisations, fine-tunes
+(e.g. a realism merge), Krea 2 Raw/Base and MOSS-Image Turbo. Put the
+`.gguf` or `.safetensors` file in `models/krea2/` or `models/moss_image/`
+(subfolders are fine) or in `models/checkpoints/`, then click **Refresh All
+Files**. The app reads each file's header (tensor names, never the weights)
+to tell a model from a LoRA, text encoder or VAE, so a LoRA saved in a model
+folder shows up under LoRAs instead of as a broken model. The family's
+support files (text encoder, VAE, tokenizer) still come from its own folder.
+
+Sampling follows the checkpoint's file name:
+
+| Name contains | Steps | CFG | Negative prompt |
+| --- | --- | --- | --- |
+| Krea 2, anything else (Turbo and fine-tunes of it) | 8 | 1 | no |
+| Krea 2, `raw` or `base` (not `turbo`) | 50 | 3 | yes |
+| MOSS-Image, anything else (SFT, Base) | 50 | 3 | yes |
+| MOSS-Image, `turbo` or `8step` | 8 | 1 | no |
+| MOSS-Image, `4step` | 4 | 1 | no |
+
+Debug > "Forced Overwrite of Sampling Step" still overrides the steps.
+Files in the checkpoints folder that aren't SDXL checkpoints (LoRAs, Krea 2 /
+MOSS-Image / FLUX.1 models, VAEs, text encoders) are left out of the SDXL
+list; the console says where each one went (`[models] ...`).
+
 ## LoRAs
 
 Every family (SDXL, FLUX.1, Krea 2, MOSS-Image) takes LoRAs from the usual
-LoRA folders. Under Advanced > Models each LoRA dropdown lists only the
+LoRA folders, and from the model folders (checkpoints, krea2, moss_image,
+flux) when a LoRA was saved next to the models. `.safetensors` and `.gguf`
+LoRAs are read. Under Advanced > Models each LoRA dropdown lists only the
 LoRAs made for the selected family, recognised from the tensor names in the
-file; each family remembers its own picks. `<lora:NAME:WEIGHT>` in the
+file in any naming style (kohya `lora_unet_...`, PEFT / diffusers,
+ComfyUI / native `diffusion_model....`); each family remembers its own picks.
+A line under the dropdowns says how many LoRAs fit the selected family and
+names the ones hidden because they were made for another family or for a
+model this app can't run (Qwen-Image, Z-Image, SD3, Wan, ...). `<lora:NAME:WEIGHT>` in the
 prompt works too. A LoRA made for another family (for example the default
 preset's SDXL offset LoRA after switching to Krea 2) is skipped, and the
 progress bar says so. The LoRAs used are saved with the image, so History >
@@ -76,8 +109,8 @@ the transformer on about half the steps: sampling 493 s -> 230 s with the
 same sign text and a nearly identical image. The sd-cli
 process's own footprint stays under 0.5 GB because the weights are mapped
 from disk. Folders can be moved with `path_sdcpp`, `path_krea2` and
-`path_moss_image` in `config.txt`. Other quantisations work too: put a GGUF
-whose name starts with `Krea-2` / `MOSS-Image` next to the support files.
+`path_moss_image` in `config.txt`. Other quantisations and fine-tunes work
+too; see [More models](#more-models).
 
 ## Licences
 

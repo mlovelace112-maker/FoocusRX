@@ -815,23 +815,99 @@ def get_model_filenames(folder_paths, extensions=None, name_filter=None):
     return files
 
 
+# Where LoRAs are looked up: the LoRA folders first, then any model folder
+# that holds LoRA files (a LoRA saved next to the models still works).
+lora_search_paths = []
+# What update_files() noticed about files in the wrong place, for the log.
+file_notes = []
+
+
+def get_file_from_folder_list(name, folders):
+    """First existing ``folders/name`` (as modules.util's helper, which this
+    module can't import), else the path in the first folder."""
+    folders = folders if isinstance(folders, list) else [folders]
+    for folder in folders:
+        path = os.path.abspath(os.path.realpath(os.path.join(folder, name)))
+        if os.path.isfile(path):
+            return path
+    return os.path.abspath(os.path.realpath(os.path.join(folders[0], name)))
+
+
+def model_folders() -> list:
+    """Folders that hold base models (checkpoints, FLUX.1, Krea 2, MOSS-Image)."""
+    return [p for p in list(paths_checkpoints) + [path_flux, path_krea2, path_moss_image] if p]
+
+
+def resolve_lora(name):
+    """Absolute path of a LoRA listed in lora_filenames."""
+    return get_file_from_folder_list(name, lora_search_paths or paths_loras)
+
+
+def _sdxl_checkpoints(names: list) -> list:
+    """The checkpoint files that are SDXL (or SD1.5) base models. LoRAs, other
+    families' models, text encoders and VAEs saved in the checkpoints folder are
+    left out here (LoRAs and Krea 2 / MOSS-Image models are listed where they
+    belong) instead of showing up as SDXL models that fail to load."""
+    import modules.model_files as mf
+    kept = []
+    for name in names:
+        info = mf.inspect(get_file_from_folder_list(name, paths_checkpoints)) \
+            if name.lower().endswith(mf.SCAN_EXTENSIONS) else mf.FileInfo(mf.UNKNOWN)
+        if info.kind in (mf.MODEL, mf.UNKNOWN) and info.family in ('', mf.SDXL):
+            kept.append(name)
+        elif info.kind == mf.LORA:
+            file_notes.append(f'{name}: a {info.family} LoRA in the checkpoints folder, listed under LoRAs')
+        elif info.kind == mf.MODEL:
+            file_notes.append(f'{name}: a {info.family} model, not SDXL'
+                              + (' (move it to the FLUX folder to use it)' if info.family == mf.FLUX else ''))
+        else:
+            file_notes.append(f'{name}: a {info.kind.replace("_", " ")} file, not a base model; not listed')
+    return kept
+
+
+def _loras_in_model_folders(already: list) -> tuple:
+    """(names, folders) of LoRA files found among the base models."""
+    import modules.model_files as mf
+    names, folders = [], []
+    seen = set(already)
+    for folder in model_folders():
+        for name, path in mf.scan_folder(folder):
+            if name in seen or mf.inspect(path).kind != mf.LORA:
+                continue
+            seen.add(name)
+            names.append(name)
+            if folder not in folders:
+                folders.append(folder)
+            if folder not in paths_checkpoints:
+                file_notes.append(f'{name}: a LoRA in {os.path.basename(os.path.normpath(folder))}, listed under LoRAs')
+    return names, folders
+
+
 def update_files():
-    global model_filenames, lora_filenames, vae_filenames, wildcard_filenames, available_presets
-    model_filenames = get_model_filenames(paths_checkpoints)
+    global model_filenames, lora_filenames, vae_filenames, wildcard_filenames, available_presets, \
+        lora_search_paths
+    file_notes.clear()
+    model_filenames = _sdxl_checkpoints(get_model_filenames(paths_checkpoints))
     try:  # FLUX.1 schnell appears as a base model when its files and packages are present
         from modules.flux.app import model_choices
         model_filenames += model_choices(path_flux)
     except Exception as exc:
         print(f'[flux] not available: {exc}')
-    try:  # Krea 2 / MOSS-Image appear when the sd.cpp engine and their files are present
+    try:  # Krea 2 / MOSS-Image: every model of theirs in their folders or the checkpoints folder
         from modules.sdcpp.app import model_choices as sdcpp_model_choices
-        model_filenames += sdcpp_model_choices()
+        model_filenames += sdcpp_model_choices(extra_dirs=paths_checkpoints)
     except Exception as exc:
         print(f'[sd.cpp] not available: {exc}')
-    lora_filenames = get_model_filenames(paths_loras)
+    lora_filenames = get_model_filenames(paths_loras, ['.pth', '.ckpt', '.bin', '.safetensors', '.gguf',
+                                                       '.fooocus.patch'])
+    extra_loras, extra_folders = _loras_in_model_folders(lora_filenames)
+    lora_filenames += extra_loras
+    lora_search_paths = list(paths_loras) + [f for f in extra_folders if f not in paths_loras]
     vae_filenames = get_model_filenames(path_vae)
     wildcard_filenames = get_files_from_folder(path_wildcards, ['.txt'])
     available_presets = get_presets()
+    for note in file_notes:
+        print(f'[models] {note}')
     return
 
 

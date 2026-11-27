@@ -95,7 +95,7 @@ def with_family_choices(results: list, base_model_index: int, lora_start: int) -
         value=base_model, choices=modules.ui_family.models_for(family, modules.config.model_filenames))
     options = ['None'] + modules.lora_family.loras_for(
         family, modules.config.lora_filenames,
-        lambda name: modules.util.get_file_from_folder_list(name, modules.config.paths_loras))
+        modules.config.resolve_lora)
     for i in range(lora_start + 1, len(results), 3):  # (enabled, name, weight) per slot
         name = results[i]
         if isinstance(name, str):
@@ -366,7 +366,7 @@ class MetadataParser(ABC):
         self.loras = []
         for (lora_name, lora_weight) in loras:
             if lora_name != 'None':
-                lora_path = get_file_from_folder_list(lora_name, modules.config.paths_loras)
+                lora_path = modules.config.resolve_lora(lora_name)
                 lora_hash = sha256_from_cache(lora_path)
                 self.loras.append((Path(lora_name).stem, lora_weight, lora_hash))
         self.vae_name = Path(vae_name).stem
