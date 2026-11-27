@@ -27,6 +27,9 @@ class AsyncTask:
         self.processing = False
 
         self.performance_loras = []
+        # path -> what auto upscale needs to redo an image (run_auto_upscale)
+        self.upscale_records = {}
+        self.auto_upscale = False
 
         if len(args) == 0:
             return
@@ -165,6 +168,15 @@ class AsyncTask:
         self.prompt_queue = bool(args.pop()) if args else False
         self.auto_quality = bool(args.pop()) if args else False  # modules/quality_prompts.py
         self.auto_negative = bool(args.pop()) if args else False  # modules/auto_negative.py
+        # Auto upscale (modules/upscale_pipeline.py); off when a caller leaves it out.
+        import modules.upscale_pipeline as upscale_pipeline
+        self.auto_upscale = bool(args.pop()) if args else False
+        self.auto_upscale_settings = upscale_pipeline.make_settings(
+            enabled=self.auto_upscale,
+            scale=args.pop() if args else upscale_pipeline.Settings.scale,
+            method=args.pop() if args else upscale_pipeline.METHOD_DETAILED,
+            upscaler=args.pop() if args else upscale_pipeline.BUILT_IN_UPSCALER,
+            keep_original=args.pop() if args else True)
 
         self.should_enhance = self.enhance_checkbox and (self.enhance_uov_method != disabled.casefold() or len(self.enhance_ctrls) > 0)
         self.images_to_enhance_count = 0
@@ -194,6 +206,7 @@ class AsyncTask:
         child.parent = self
         child.yields = self.yields      # previews and results reach the same UI stream
         child.results = self.results    # so the gallery accumulates across prompts
+        child.upscale_records = self.upscale_records  # auto upscale runs once, after the whole queue
         return child
 
 class _AsyncTaskList(list):
@@ -256,6 +269,7 @@ def worker():
     from modules.upscaler import perform_upscale
     from modules.flags import Performance
     from modules.meta_parser import get_metadata_parser
+    import modules.upscale_pipeline as upscale_pipeline
 
     pid = os.getpid()
     print(f'Started worker with PID {pid}')
@@ -382,6 +396,11 @@ def worker():
             imgs = default_censor(imgs)
         progressbar(async_task, current_progress, f'Saving image {current_task_id + 1}/{total_count} to system ...')
         img_paths = save_and_log(async_task, height, imgs, task, use_expansion, width, loras, persist_image)
+        for path in img_paths:
+            if persist_image and 'upscale' not in goals:
+                remember_sdxl_for_upscale(async_task, path, task, loras, switch, final_scheduler_name, goals)
+            else:  # an Upscale result isn't enlarged again
+                async_task.upscale_records.pop(path, None)
         yield_result(async_task, img_paths, current_progress, async_task.black_out_nsfw, False,
                      do_not_show_finished_images=not show_intermediate_results or async_task.disable_intermediate_results)
 
@@ -456,9 +475,40 @@ def worker():
             d.append(('Metadata Scheme', 'metadata_scheme',
                       async_task.metadata_scheme.value if async_task.save_metadata_to_images else async_task.save_metadata_to_images))
             d.append(('Version', 'version', 'Fooocus v' + fooocus_version.version))
-            img_paths.append(log(x, d, metadata_parser, async_task.output_format, task, persist_image))
+            path = log(x, d, metadata_parser, async_task.output_format, task, persist_image)
+            img_paths.append(path)
+            if persist_image and getattr(async_task, 'auto_upscale', False):
+                async_task.upscale_records[path] = {'metadata': d, 'parser': metadata_parser, 'task': task}
 
         return img_paths
+
+    def remember_sdxl_for_upscale(async_task, path, task, loras, switch, final_scheduler_name, goals):
+        """What the SDXL detail pass needs to redraw this image later, when
+        the conditioning tensors are long gone (run_auto_upscale)."""
+        record = async_task.upscale_records.get(path)
+        if record is None:
+            return
+        prompt = dict(positive=list(task['positive']), negative=list(task['negative']),
+                      positive_top_k=task['positive_top_k'], negative_top_k=task['negative_top_k'])
+        if 'inpaint' in goals and async_task.should_enhance:
+            # An Enhance step's prompt describes one region ("detailed face");
+            # redraw the whole image with the generation's own prompt.
+            prompt = getattr(async_task, 'upscale_main_prompt', None) or prompt
+        else:
+            async_task.upscale_main_prompt = prompt
+        steps_uov = async_task.performance_selection.steps_uov() if hasattr(
+            async_task.performance_selection, 'steps_uov') else None
+        steps = int(steps_uov or async_task.steps)
+        record.update(
+            family='sdxl', prompt=prompt, seed=int(task['task_seed']),
+            base_model=async_task.base_model_name, refiner_model=async_task.refiner_model_name,
+            vae=async_task.vae_name, loras=list(loras), clip_skip=async_task.clip_skip,
+            steps=steps, switch=steps if async_task.refiner_model_name == 'None' else int(round(steps * async_task.refiner_switch)),
+            sampler=async_task.sampler_name, scheduler=final_scheduler_name, cfg=float(async_task.cfg_scale),
+            refiner_swap_method=async_task.refiner_swap_method, disable_preview=async_task.disable_preview,
+            denoise=float(async_task.overwrite_upscale_strength) if async_task.overwrite_upscale_strength > 0
+            else upscale_pipeline.SDXL_DETAIL_DENOISE,
+            patch=modules.patch.patch_settings.get(pid))
 
     def apply_control_nets(async_task, height, ip_adapter_face_path, ip_adapter_path, width, current_progress):
         for task in async_task.cn_tasks[flags.cn_canny]:
@@ -1302,6 +1352,9 @@ def worker():
                 ('Version', 'version', 'FoocusRX FLUX.1 schnell'),
             ]
             path = log(image, metadata, metadata_parser=None, output_format=async_task.output_format)
+            if async_task.auto_upscale and (mode is None or mode[0] == 'vary'):
+                async_task.upscale_records[path] = {'metadata': metadata, 'parser': None, 'family': 'flux',
+                                                    'text': text, 'seed': seed}
             yield_result(async_task, [path], int(5 + 90 * (i + 1) / total), async_task.black_out_nsfw, censor=False)
 
         spent = {k: v - before[k] for k, v in vars(flux.timings).items()}  # this run only
@@ -1433,6 +1486,8 @@ def worker():
                                        f'{sdcpp_registry.ENGINE_VERSION})'),
             ]
             path = log(image, metadata, metadata_parser=None, output_format=async_task.output_format)
+            if async_task.auto_upscale:
+                async_task.upscale_records[path] = {'metadata': metadata, 'parser': None, 'family': 'sdcpp'}
             yield_result(async_task, [path], int(5 + 90 * (i + 1) / total), async_task.black_out_nsfw, censor=False)
 
         print(f'[sd.cpp] {total} image(s) in {time.perf_counter() - started:.1f} s')
@@ -1843,6 +1898,169 @@ def worker():
         stop_processing(async_task, processing_start_time)
         return
 
+    # --- Auto upscale (modules/upscale_pipeline.py) -------------------------
+
+    _OUTPUT_FORMAT_BY_EXT = {'.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg', '.webp': 'webp'}
+
+    def model_upscale_to(image, size, model_path):
+        """Upscaler-model passes until ``size`` is reached, then an exact
+        resize (Lanczos) to ``size``."""
+        width, height = size
+        if image.shape[1] < width or image.shape[0] < height:
+            import modules.upscaler as upscaler
+            passes = upscale_pipeline.model_passes(max(image.shape[:2]), max(width, height),
+                                                   upscaler.model_scale(model_path))
+            for _ in range(passes):
+                ldm_patched.modules.model_management.throw_exception_if_processing_interrupted()
+                image = perform_upscale(image, model_path)
+        if (image.shape[1], image.shape[0]) != (width, height):
+            image = resample_image(image, width=width, height=height)
+        return image
+
+    def sdxl_detail_pass(task, record, image, on_step, loaded):
+        """Input Image > "Upscale (2x)"'s diffusion pass, with the image's own
+        model, LoRAs, prompt, seed and sampler."""
+        key = (record['base_model'], record['refiner_model'], record['vae'], tuple(map(tuple, record['loras'])))
+        if loaded.get('sdxl') != key:
+            inpaint_worker.current_task = None  # Enhance may have left an inpaint patch on the UNet
+            pipeline.refresh_everything(refiner_model_name=record['refiner_model'],
+                                        base_model_name=record['base_model'], loras=record['loras'],
+                                        vae_name=record['vae'])
+            loaded['sdxl'] = key
+        pipeline.set_clip_skip(record['clip_skip'])
+        if record.get('patch') is not None:
+            modules.patch.patch_settings[pid] = record['patch']
+        prompt = record['prompt']
+        c = pipeline.clip_encode(texts=prompt['positive'], pool_top_k=prompt['positive_top_k'])
+        if abs(record['cfg'] - 1.0) < 1e-4:
+            uc = pipeline.clone_cond(c)
+        else:
+            uc = pipeline.clip_encode(texts=prompt['negative'], pool_top_k=prompt['negative_top_k'])
+        candidate_vae, _ = pipeline.get_candidate_vae(steps=record['steps'], switch=record['switch'],
+                                                      denoise=record['denoise'],
+                                                      refiner_swap_method=record['refiner_swap_method'])
+        latent = core.encode_vae(vae=candidate_vae, pixels=core.numpy_to_pytorch(image), tiled=True)
+        _, _, lh, lw = latent['samples'].shape
+
+        def callback(step, x0, x, total_steps, y):
+            on_step(step, total_steps, y)
+
+        imgs = pipeline.process_diffusion(
+            positive_cond=c, negative_cond=uc, steps=record['steps'], switch=record['switch'],
+            width=lw * 8, height=lh * 8, image_seed=record['seed'], callback=callback,
+            sampler_name=record['sampler'], scheduler_name=record['scheduler'], latent=latent,
+            denoise=record['denoise'], tiled=True, cfg_scale=record['cfg'],
+            refiner_swap_method=record['refiner_swap_method'], disable_preview=record['disable_preview'])
+        del c, uc, latent
+        return imgs[0]
+
+    def flux_detail_pass(record, image, on_step):
+        import modules.flux.app as flux_app
+        flux = flux_app.get_pipeline()
+        return flux.refine_tiled(record['text'], image, record['seed'], strength=flux_app.UPSCALE_REFINE_STRENGTH,
+                                 callback=lambda done, total: on_step(done, total, None))
+
+    def run_auto_upscale(task: AsyncTask):
+        """Upscale every image this task saved, right after the task (and
+        the whole prompt queue) finishes. Settings: task.auto_upscale_settings."""
+        settings = getattr(task, 'auto_upscale_settings', None)
+        records = getattr(task, 'upscale_records', None) or {}
+        if settings is None or not settings.enabled or not records:
+            return
+        if getattr(task, 'draft_mode', False):
+            print('[Auto upscale] Skipped: draft previews aren\'t upscaled; use "Render full quality".')
+            return
+        if task.last_stop == 'stop':
+            return
+        import args_manager
+        import modules.history as history
+        import modules.private_logger as private_logger
+        temp_dir = None if args_manager.args.disable_image_log else modules.config.temp_path
+        originals = [p for p in task.results if isinstance(p, str) and 'family' in records.get(p, {})
+                     and upscale_pipeline.should_upscale(p, temp_dir)]
+        if not originals:
+            return
+        model_path = upscale_pipeline.resolve_upscaler(settings.upscaler, modules.config.path_upscale_models)
+        upscaler_label = (settings.upscaler if model_path else upscale_pipeline.BUILT_IN_UPSCALER)
+        if model_path is None and settings.upscaler != upscale_pipeline.BUILT_IN_UPSCALER:
+            print(f'[Auto upscale] "{settings.upscaler}" not found in {modules.config.path_upscale_models}; '
+                  f'using the built-in upscaler.')
+        if model_path is None:
+            modules.config.downloading_upscale_model()
+
+        total = len(originals)
+        label = upscale_pipeline.scale_label(settings.scale)
+        loaded = {}
+        task.processing = True  # lets Stop / Skip interrupt the upscale
+        started = time.perf_counter()
+        try:
+            for index, original in enumerate(originals):
+                if task.last_stop == 'stop':
+                    break
+                record = records[original]
+                base = int(100 * index / total)
+                title = f'Auto upscale {label}, image {index + 1}/{total}'
+
+                def on_step(step, steps, preview, base=base, title=title):
+                    ldm_patched.modules.model_management.throw_exception_if_processing_interrupted()
+                    done = base + int(100 / total * (step + 1) / max(steps, 1) * 0.9)
+                    task.yields.append(['preview', (min(done, 99), f'{title}: adding detail, step {step + 1}/{steps} ...',
+                                                    preview)])
+
+                try:
+                    progressbar(task, base, f'{title} ...')
+                    image = HWC3(cv2.cvtColor(cv2.imread(original, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB))
+                    height, width = image.shape[:2]
+                    plan = upscale_pipeline.plan(width, height, settings, record.get('family', 'sdxl'))
+                    detail_label = None
+                    if plan.detail is not None:
+                        progressbar(task, base, f'{title}: upscaling to {plan.detail[0]}×{plan.detail[1]} ...')
+                        image = model_upscale_to(image, plan.detail, model_path)
+                        if record.get('family') == 'flux':
+                            image = flux_detail_pass(record, image, on_step)
+                            detail_label = 'FLUX.1 detail pass'
+                        else:
+                            image = sdxl_detail_pass(task, record, image, on_step, loaded)
+                            detail_label = f'detail pass at {plan.detail[0]}×{plan.detail[1]}, denoise {record["denoise"]:g}'
+                    progressbar(task, base, f'{title}: upscaling to {plan.final[0]}×{plan.final[1]} ...')
+                    image = model_upscale_to(image, plan.final, model_path)
+
+                    ext = os.path.splitext(original)[1].lower()
+                    target = upscale_pipeline.upscaled_path(original, settings.scale)
+                    rows = upscale_pipeline.upscale_metadata(record.get('metadata'), settings, plan.final,
+                                                            upscaler_label, detail_label, plan.note,
+                                                            os.path.basename(original))
+                    saved = private_logger.log(image, rows, record.get('parser'),
+                                               _OUTPUT_FORMAT_BY_EXT.get(ext, 'png'), record.get('task'),
+                                               persist_image=True, path=target)
+                    print(f'[Auto upscale] {os.path.basename(original)} -> {os.path.basename(saved)} '
+                          f'({plan.final[0]}×{plan.final[1]})')
+
+                    results = list(task.results)
+                    position = results.index(original) if original in results else len(results) - 1
+                    results.insert(position + 1, saved)
+                    if not settings.keep_original:
+                        moves, _ = history.delete_items([original], modules.config.path_outputs,
+                                                        log_remover=private_logger.remove_log_entries)
+                        if moves:
+                            results.remove(original)
+                    task.results = results
+                    task.yields.append(['results', task.results])
+                except ldm_patched.modules.model_management.InterruptProcessingException:
+                    if task.last_stop == 'skip':
+                        print('[Auto upscale] User skipped')
+                        task.last_stop = False
+                        continue
+                    print('[Auto upscale] User stopped')
+                    break
+                except Exception:
+                    # One bad image (or a model that won't load) must not lose the run's results.
+                    traceback.print_exc()
+                    progressbar(task, base, f'{title}: failed, see the terminal. The original is kept.')
+        finally:
+            task.processing = False
+            print(f'[Auto upscale] {total} image(s) in {time.perf_counter() - started:.1f} s')
+
     def run_prompt_queue(task: AsyncTask, prompts: list[str]):
         """Run the handler once per prompt line, each on its own child task.
         Stop ends the whole queue; Skip skips the current image as usual."""
@@ -1879,6 +2097,7 @@ def worker():
                 handler(task)
             if task.generate_image_grid:
                 build_image_wall(task)
+            run_auto_upscale(task)  # after the wall, which needs same-size images
             task.yields.append(['finish', task.results])
             import modules.ui_family as ui_family
             if ui_family.is_sdxl(task.base_model_name):  # SDXL was freed for FLUX/sd.cpp; nothing to warm up

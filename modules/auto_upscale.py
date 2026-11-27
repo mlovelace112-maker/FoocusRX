@@ -29,7 +29,14 @@ def upscaled_path(path: str) -> str:
 
 
 def is_upscaled(path: str) -> bool:
-    return os.path.splitext(os.path.basename(path))[0].endswith(SUFFIX)
+    """This script's ``*_2x.png`` or the app's auto upscale (``*_up4x.png``)."""
+    from modules.upscale_pipeline import is_upscale
+    return os.path.splitext(os.path.basename(path))[0].endswith(SUFFIX) or is_upscale(path)
+
+
+def _has_auto_upscale(path: str, names) -> bool:
+    stem = os.path.splitext(os.path.basename(path))[0] + '_up'
+    return any(n.startswith(stem) and is_upscaled(n) for n in names)
 
 
 def find_pending(root: str, since: datetime.date | None = None) -> list:
@@ -42,10 +49,11 @@ def find_pending(root: str, since: datetime.date | None = None) -> list:
         if since is not None and datetime.date.fromisoformat(day) < since:
             continue
         day_dir = os.path.join(root, day)
-        for name in sorted(os.listdir(day_dir)):
+        names = sorted(os.listdir(day_dir))
+        for name in names:
             path = os.path.join(day_dir, name)
             if (name.lower().endswith(IMAGE_EXTENSIONS) and not is_upscaled(path)
-                    and not os.path.exists(upscaled_path(path))):
+                    and not os.path.exists(upscaled_path(path)) and not _has_auto_upscale(path, names)):
                 pending.append(path)
     return pending
 

@@ -42,6 +42,14 @@ class TestFindPending(unittest.TestCase):
         self.touch('notadate/e.png')
         self.assertEqual(au.find_pending(self.root), [a, b])
 
+    def test_skips_the_apps_auto_upscales(self):
+        a = self.touch('2026-11-27/a.png')
+        self.touch('2026-11-27/b.png')
+        self.touch('2026-11-27/b_up4x.png')            # auto upscaled in the app already
+        self.touch('2026-11-27/c_up2x (2).png')        # an auto upscale is never upscaled again
+        self.assertEqual(au.find_pending(self.root), [a])
+        self.assertTrue(au.is_upscaled('/o/b_up4x.png'))
+
     def test_since_filter(self):
         self.touch('2026-11-23/a.png')
         b = self.touch('2026-11-24/b.png')

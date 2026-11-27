@@ -46,6 +46,24 @@ class TestAsyncTaskQueueSupport(unittest.TestCase):
     def test_default_is_off_without_the_control(self):
         self.assertFalse(getattr(async_worker.AsyncTask([]), 'prompt_queue', False))
 
+    def test_auto_upscale_is_off_without_the_control(self):
+        task = async_worker.AsyncTask([])
+        self.assertFalse(task.auto_upscale)
+        self.assertEqual(task.upscale_records, {})
+
+    def test_queue_children_share_upscale_records(self):
+        parent = async_worker.AsyncTask([])
+        parent.args = [True, 'a cat\na dog']
+
+        class FakeTask:
+            def __init__(self, args):
+                self.parent = None
+
+        with mock.patch.object(async_worker, 'AsyncTask', FakeTask):
+            child = parent.make_queue_child('a dog')
+        child.upscale_records['/o/a.png'] = {'family': 'sdxl'}
+        self.assertIn('/o/a.png', parent.upscale_records)
+
     def test_child_forwards_stop_and_skip_to_parent(self):
         parent = async_worker.AsyncTask([])
         child = async_worker.AsyncTask([])

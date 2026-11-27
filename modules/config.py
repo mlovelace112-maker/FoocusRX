@@ -654,6 +654,39 @@ default_save_only_final_enhanced_image = get_config_item_or_set_default(
     validator=lambda x: isinstance(x, bool),
     expected_type=bool
 )
+# Auto upscale every generation (modules/upscale_pipeline.py). Extra
+# upscaler models (.pth / .pt / .safetensors, e.g. 4x-UltraSharp,
+# RealESRGAN_x4plus) go in path_upscale_models.
+default_auto_upscale = get_config_item_or_set_default(
+    key='default_auto_upscale',
+    default_value=True,
+    validator=lambda x: isinstance(x, bool),
+    expected_type=bool
+)
+default_auto_upscale_scale = get_config_item_or_set_default(
+    key='default_auto_upscale_scale',
+    default_value='4x',
+    validator=lambda x: x in ('1.5x', '2x', '3x', '4x'),
+    expected_type=str
+)
+default_auto_upscale_method = get_config_item_or_set_default(
+    key='default_auto_upscale_method',
+    default_value='Detailed (slower, adds detail)',
+    validator=lambda x: x in ('Detailed (slower, adds detail)', 'Fast (upscaler model only)'),
+    expected_type=str
+)
+default_auto_upscale_model = get_config_item_or_set_default(
+    key='default_auto_upscale_model',
+    default_value='Built-in (Fooocus ESRGAN)',
+    validator=lambda x: isinstance(x, str) and x != '',
+    expected_type=str
+)
+default_auto_upscale_keep_original = get_config_item_or_set_default(
+    key='default_auto_upscale_keep_original',
+    default_value=True,
+    validator=lambda x: isinstance(x, bool),
+    expected_type=bool
+)
 default_save_metadata_to_images = get_config_item_or_set_default(
     key='default_save_metadata_to_images',
     default_value=False,

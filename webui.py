@@ -28,6 +28,7 @@ import modules.util
 import modules.flux.app
 import modules.history
 import modules.model_manager
+import modules.upscale_pipeline
 import threading
 import args_manager
 import copy
@@ -721,6 +722,40 @@ with shared.gradio_root:
                                              visible=initial_family == modules.ui_family.SDXL)
                     prompt_queue = gr.Checkbox(label='Prompt queue', value=False,
                                                info='Each prompt line becomes its own generation.')
+                    auto_upscale = gr.Checkbox(label='Auto upscale', value=modules.config.default_auto_upscale,
+                                               info='Saves an upscaled copy of every image when the run '
+                                                    'finishes. Settings below.',
+                                               elem_id='auto_upscale')
+                with gr.Accordion(label='Auto upscale settings', open=False, elem_id='auto_upscale_accordion'):
+                    auto_upscale_scale = gr.Radio(label='Scale', choices=list(modules.upscale_pipeline.SCALE_LABELS),
+                                                  value=modules.config.default_auto_upscale_scale)
+                    auto_upscale_method = gr.Radio(
+                        label='Method', choices=list(modules.upscale_pipeline.METHODS),
+                        value=modules.config.default_auto_upscale_method,
+                        info='Detailed: upscaler model, then a light redraw with the same model, prompt and seed '
+                             '(like Upscale (2x); about 2x the image size, the rest by the upscaler). '
+                             'Minutes per image. Fast: upscaler model only, seconds. '
+                             'Krea 2 / MOSS images always use Fast.')
+                    with gr.Row():
+                        auto_upscale_model = gr.Dropdown(
+                            label='Upscaler model',
+                            choices=modules.upscale_pipeline.list_upscalers(modules.config.path_upscale_models),
+                            value=modules.config.default_auto_upscale_model, allow_custom_value=True,
+                            info='Add more (.pth / .safetensors, e.g. 4x-UltraSharp) to '
+                                 f'{os.path.abspath(modules.config.path_upscale_models)}', scale=4)
+                        auto_upscale_refresh = gr.Button(value='\U0001f504', variant='secondary', scale=1,
+                                                         elem_classes='refresh_button')
+                    auto_upscale_keep_original = gr.Checkbox(
+                        label='Keep original', value=modules.config.default_auto_upscale_keep_original,
+                        info='Off: the original moves to the Trash once its upscale is saved.')
+
+                    def refresh_upscalers(current):
+                        choices = modules.upscale_pipeline.list_upscalers(modules.config.path_upscale_models)
+                        return gr.update(choices=choices,
+                                         value=current if current in choices else modules.upscale_pipeline.BUILT_IN_UPSCALER)
+
+                    auto_upscale_refresh.click(refresh_upscalers, inputs=auto_upscale_model, outputs=auto_upscale_model,
+                                               queue=False, show_progress=False)
                 draft_request = gr.State(None)       # {'mode': 'full', 'seed': int} for one run
                 gallery_selected_index = gr.State(None)
 
@@ -1458,6 +1493,8 @@ with shared.gradio_root:
         ctrls += [prompt_queue]  # AsyncTask reads these after the enhance controls, in this order
         ctrls += [auto_quality_prompts]
         ctrls += [auto_negative_prompt]
+        ctrls += [auto_upscale, auto_upscale_scale, auto_upscale_method, auto_upscale_model,
+                  auto_upscale_keep_original]
 
         # get_task drops currentTask (ctrls[0]), hence the -1.
         DRAFT_ARG_INDEX.update({

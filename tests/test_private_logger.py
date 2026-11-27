@@ -4,9 +4,14 @@ import sys
 # arguments (e.g. `unittest discover tests`) so it doesn't exit with code 2.
 sys.argv = sys.argv[:1]
 
+import os
+import shutil
+import tempfile
 import unittest
 
-from modules.private_logger import build_log_item
+import numpy as np
+
+from modules.private_logger import build_log_item, log
 
 
 class TestBuildLogItem(unittest.TestCase):
@@ -42,6 +47,22 @@ class TestBuildLogItem(unittest.TestCase):
         item = build_log_item('a"b.png', [])
         self.assertNotIn('a"b.png', item)
         self.assertIn('a&quot;b.png', item)
+
+
+class TestLogToGivenPath(unittest.TestCase):
+    def test_saves_to_the_path_and_logs_it_in_that_days_log(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        target = os.path.join(root, '2026-11-27', 'a_up4x.png')
+        os.makedirs(os.path.dirname(target))
+        saved = log(np.zeros((8, 8, 3), dtype=np.uint8), [('Upscaled from', 'upscaled_from', 'a.png')],
+                    output_format='png', path=target)
+        self.assertEqual(saved, os.path.abspath(target))
+        self.assertTrue(os.path.isfile(target))
+        with open(os.path.join(root, '2026-11-27', 'log.html'), encoding='utf-8') as f:
+            page = f.read()
+        self.assertIn('a_up4x.png', page)
+        self.assertIn('2026-11-27', page)
 
 
 if __name__ == '__main__':
