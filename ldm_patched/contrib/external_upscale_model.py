@@ -39,26 +39,45 @@ class ImageUpscaleWithModel:
 
     def upscale(self, upscale_model, image):
         device = model_management.get_torch_device()
-        upscale_model.to(device)
-        in_img = image.movedim(-1,-3).to(device)
-        free_memory = model_management.get_free_memory(device)
+        # Make room first: the upscaler isn't tracked by model_management, so
+        # without this an SDXL UNet left on the GPU competes with it.
+        model_bytes = sum(p.numel() * p.element_size() for p in upscale_model.parameters())
+        model_management.free_memory(model_bytes * 1.3 + model_management.minimum_inference_memory(), device)
 
         tile = 512
         overlap = 32
-
-        oom = True
-        while oom:
-            try:
-                steps = in_img.shape[0] * ldm_patched.modules.utils.get_tiled_scale_steps(in_img.shape[3], in_img.shape[2], tile_x=tile, tile_y=tile, overlap=overlap)
-                pbar = ldm_patched.modules.utils.ProgressBar(steps)
-                s = ldm_patched.modules.utils.tiled_scale(in_img, lambda a: upscale_model(a), tile_x=tile, tile_y=tile, overlap=overlap, upscale_amount=upscale_model.scale, pbar=pbar)
+        freed_models = False
+        s = None
+        in_img = None
+        try:
+            upscale_model.to(device)
+            in_img = image.movedim(-1,-3).to(device)
+            while s is None:
                 oom = False
-            except model_management.OOM_EXCEPTION as e:
-                tile //= 2
-                if tile < 128:
-                    raise e
-
-        upscale_model.cpu()
+                try:
+                    steps = in_img.shape[0] * ldm_patched.modules.utils.get_tiled_scale_steps(in_img.shape[3], in_img.shape[2], tile_x=tile, tile_y=tile, overlap=overlap)
+                    pbar = ldm_patched.modules.utils.ProgressBar(steps)
+                    s = ldm_patched.modules.utils.tiled_scale(in_img, lambda a: upscale_model(a), tile_x=tile, tile_y=tile, overlap=overlap, upscale_amount=upscale_model.scale, pbar=pbar)
+                except Exception as e:
+                    # MPS raises a plain RuntimeError for out-of-memory.
+                    if not model_management.is_oom_error(e) or (tile // 2 < 128 and freed_models):
+                        raise
+                    oom = True
+                if oom:
+                    # Outside the except block, so the failed tile's tensors are gone.
+                    if not freed_models:
+                        # First time: unload every other model, then retry the same tile size.
+                        print(f"[upscale] out of memory at {tile}px tiles; unloading other models and retrying.")
+                        model_management.unload_all_models()
+                        freed_models = True
+                    else:
+                        model_management.soft_empty_cache(force=True)
+                        tile //= 2
+                        print(f"[upscale] out of memory again; retrying with {tile}px tiles.")
+        finally:
+            upscale_model.cpu()
+            in_img = None
+            model_management.soft_empty_cache(force=True)
         s = torch.clamp(s.movedim(-3,-1), min=0, max=1.0)
         return (s,)
 

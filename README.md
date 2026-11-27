@@ -156,6 +156,12 @@ one, History delete and model downloads are disabled.
   same model, prompt and seed at up to 2x, then the upscaler model to 4x.
   Fast (model only) and other upscaler models from `models/upscale_models`
   are options. See [`docs/auto-upscale.md`](./docs/auto-upscale.md).
+- Memory: switching models frees the previous one first, idle models leave
+  the GPU after 10 minutes, a step that runs out of memory is retried after
+  freeing memory, and on Macs under 32 GB PyTorch may spill into macOS swap
+  instead of failing (`"allow_swap": false` in `config.txt` turns that off).
+  The terminal prints a `[memory]` line per generation. See
+  [`docs/memory.md`](./docs/memory.md).
 
 ## Upstream README
 

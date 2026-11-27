@@ -6,6 +6,24 @@ import safetensors.torch
 import numpy as np
 from PIL import Image
 
+def torch_load_mmap(path, **kwargs):
+    """torch.load, memory-mapping the file when possible (.pt/.pth/.ckpt/.bin
+    saved in the zip format, torch >= 2.1). Mapped weights are file-backed:
+    the OS can drop those pages under memory pressure instead of swapping
+    them, and they never exist twice while a model is built from them.
+    Older files and older torch fall back to a normal load.
+    (.safetensors files are already memory-mapped by safetensors.)"""
+    map_location = kwargs.get('map_location')
+    on_cpu = map_location is None or str(getattr(map_location, 'type', map_location)) == 'cpu'
+    if on_cpu and 'mmap' in torch.load.__code__.co_varnames:
+        try:
+            return torch.load(path, mmap=True, **kwargs)
+        except (RuntimeError, ValueError, TypeError) as exc:
+            if 'mmap' not in str(exc).lower() and 'zip' not in str(exc).lower():
+                raise
+    return torch.load(path, **kwargs)
+
+
 def load_torch_file(ckpt, safe_load=False, device=None):
     if device is None:
         device = torch.device("cpu")
@@ -17,9 +35,9 @@ def load_torch_file(ckpt, safe_load=False, device=None):
                 print("Warning torch.load doesn't support weights_only on this pytorch version, loading unsafely.")
                 safe_load = False
         if safe_load:
-            pl_sd = torch.load(ckpt, map_location=device, weights_only=True)
+            pl_sd = torch_load_mmap(ckpt, map_location=device, weights_only=True)
         else:
-            pl_sd = torch.load(ckpt, map_location=device, pickle_module=ldm_patched.modules.checkpoint_pickle)
+            pl_sd = torch_load_mmap(ckpt, map_location=device, pickle_module=ldm_patched.modules.checkpoint_pickle)
         if "global_step" in pl_sd:
             print(f"Global Step: {pl_sd['global_step']}")
         if "state_dict" in pl_sd:
