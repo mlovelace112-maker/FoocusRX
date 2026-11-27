@@ -150,6 +150,12 @@ one, History delete and model downloads are disabled.
   negative prompt and suggested styles, offline with Ollama or optionally
   with Claude, and send the reference along as an Image Prompt. See
   [`docs/prompt-studio.md`](./docs/prompt-studio.md).
+- Auto upscale: every generation also gets an upscaled copy
+  (`<name>_up4x.png`, next to the original, in the gallery and History).
+  Default 4x, Detailed: the upscaler model, then a light redraw with the
+  same model, prompt and seed at up to 2x, then the upscaler model to 4x.
+  Fast (model only) and other upscaler models from `models/upscale_models`
+  are options. See [`docs/auto-upscale.md`](./docs/auto-upscale.md).
 
 ## Upstream README
 

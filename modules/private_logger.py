@@ -69,10 +69,19 @@ def get_current_html_path(output_format=None):
     return html_name
 
 
-def log(img, metadata, metadata_parser: MetadataParser | None = None, output_format=None, task=None, persist_image=True) -> str:
+def log(img, metadata, metadata_parser: MetadataParser | None = None, output_format=None, task=None, persist_image=True,
+        path=None) -> str:
+    """Save ``img`` and add it to its day's log.html. ``path`` saves to that
+    exact file (auto upscale puts ``<name>_up4x.png`` next to its original)
+    instead of a new timestamped name in the outputs folder."""
     path_outputs = modules.config.temp_path if args_manager.args.disable_image_log or not persist_image else modules.config.path_outputs
     output_format = output_format if output_format else modules.config.default_output_format
-    date_string, local_temp_filename, only_name = generate_temp_filename(folder=path_outputs, extension=output_format)
+    if path:
+        local_temp_filename = os.path.abspath(path)
+        only_name = os.path.basename(local_temp_filename)
+        date_string = os.path.basename(os.path.dirname(local_temp_filename))
+    else:
+        date_string, local_temp_filename, only_name = generate_temp_filename(folder=path_outputs, extension=output_format)
     os.makedirs(os.path.dirname(local_temp_filename), exist_ok=True)
 
     parsed_parameters = metadata_parser.to_string(metadata.copy()) if metadata_parser is not None else ''
