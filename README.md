@@ -146,6 +146,10 @@ one, History delete and model downloads are disabled.
   sampling with EasyCache.
 - LoRAs for every model family (SDXL, FLUX.1, Krea 2, MOSS-Image), listed
   per family; see [`docs/krea2-moss-image.md#loras`](./docs/krea2-moss-image.md#loras).
+- Prompt Studio: turn an idea and/or a reference image into a prompt,
+  negative prompt and suggested styles, offline with Ollama or optionally
+  with Claude, and send the reference along as an Image Prompt. See
+  [`docs/prompt-studio.md`](./docs/prompt-studio.md).
 
 ## Upstream README
 
