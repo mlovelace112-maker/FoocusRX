@@ -247,7 +247,10 @@ def worker():
     import random
     import copy
     import cv2
+    import gc as pygc  # `gc` is gradio_compat in this module
+    import dataclasses
     import modules.default_pipeline as pipeline
+    import modules.memory_manager as memory_manager
     import modules.core as core
     import modules.flags as flags
     import modules.patch
@@ -1368,7 +1371,6 @@ def worker():
         stable-diffusion.cpp subprocess, one run per image. SDXL and FLUX are
         freed first: the subprocess needs the memory (12 GB+ of weights)."""
         import tempfile
-        import modules.flux.app as flux_app
         import modules.sdcpp.app as sdcpp_app
         from modules.sdcpp import registry as sdcpp_registry, runner as sdcpp_runner
         from modules.sdxl_styles import styles as styles_table  # apply_arrays/apply_wildcards: worker scope
@@ -1384,11 +1386,11 @@ def worker():
                                f'Run: venv/bin/python scripts/download_sdcpp.py {spec.key}')
 
         progressbar(async_task, 3, f'Freeing memory for {spec.family} ...')
-        flux_app.unload()
-        flux_app.free_sdxl()
+        # sd.cpp runs in its own process, outside PyTorch: free everything this
+        # process holds (SDXL, FLUX.1, upscalers, rewriter, Ollama) first.
         pipeline.final_expansion = None  # Fooocus V2 GPT-2; rebuilt by the next SDXL refresh
-        import gc
-        gc.collect()
+        memory_manager.free_everything(f'running {spec.family} (sd.cpp)')
+        memory_manager.log_memory(f'before {spec.family}')
 
         width, height = (int(v) for v in async_task.aspect_ratios_selection.replace('×', ' ').split(' ')[:2])
         if async_task.overwrite_width > 0:
@@ -2007,11 +2009,12 @@ def worker():
                     task.yields.append(['preview', (min(done, 99), f'{title}: adding detail, step {step + 1}/{steps} ...',
                                                     preview)])
 
-                try:
+                def upscale_one(use_settings, record=record, original=original, base=base, title=title,
+                                on_step=on_step):
                     progressbar(task, base, f'{title} ...')
                     image = HWC3(cv2.cvtColor(cv2.imread(original, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB))
                     height, width = image.shape[:2]
-                    plan = upscale_pipeline.plan(width, height, settings, record.get('family', 'sdxl'))
+                    plan = upscale_pipeline.plan(width, height, use_settings, record.get('family', 'sdxl'))
                     detail_label = None
                     if plan.detail is not None:
                         progressbar(task, base, f'{title}: upscaling to {plan.detail[0]}×{plan.detail[1]} ...')
@@ -2024,6 +2027,28 @@ def worker():
                             detail_label = f'detail pass at {plan.detail[0]}×{plan.detail[1]}, denoise {record["denoise"]:g}'
                     progressbar(task, base, f'{title}: upscaling to {plan.final[0]}×{plan.final[1]} ...')
                     image = model_upscale_to(image, plan.final, model_path)
+                    return image, plan, detail_label
+
+                try:
+                    try:
+                        image, plan, detail_label = upscale_one(settings)
+                        out_of_memory = False
+                    except Exception as exc:
+                        if settings.method != upscale_pipeline.METHOD_DETAILED or \
+                                not memory_manager.is_oom_error(exc):
+                            raise
+                        out_of_memory = True
+                    if out_of_memory:
+                        # The detail pass (or the model pass after it) ran out of
+                        # memory even after its own retry: free what's left and
+                        # redo this image with the upscaler model only (tiled).
+                        print('[Auto upscale] Out of memory; redoing this image with the upscaler model only.')
+                        memory_manager.free_gpu_memory('auto upscale ran out of memory')
+                        loaded.clear()
+                        image, plan, detail_label = upscale_one(
+                            dataclasses.replace(settings, method=upscale_pipeline.METHOD_FAST))
+                        plan = dataclasses.replace(plan, note='ran out of memory for the detail pass; '
+                                                              'used the upscaler model only')
 
                     ext = os.path.splitext(original)[1].lower()
                     target = upscale_pipeline.upscaled_path(original, settings.scale)
@@ -2060,6 +2085,12 @@ def worker():
         finally:
             task.processing = False
             print(f'[Auto upscale] {total} image(s) in {time.perf_counter() - started:.1f} s')
+            # The upscaler models are cached between images; don't keep them
+            # (or the detail pass's activations) around after the run.
+            import modules.upscaler as upscaler
+            upscaler.release()
+            memory_manager.release_cached_memory()
+            memory_manager.log_memory('after auto upscale')
 
     def run_prompt_queue(task: AsyncTask, prompts: list[str]):
         """Run the handler once per prompt line, each on its own child task.
@@ -2076,12 +2107,21 @@ def worker():
         finally:
             task.processing = False
 
+    idle_unloaded = True  # nothing is loaded at start
     while True:
         # Block until a task is queued instead of polling every 10 ms.
         # webui.py calls ``async_tasks.append(...)`` which sets the event
         # (see _AsyncTaskList above). We clear it once the queue drains
-        # so the next append trips it again.
-        async_tasks._ready.wait()
+        # so the next append trips it again. While idle, wake up once to move
+        # the models off the GPU (FOOOCUS_IDLE_UNLOAD_MINUTES).
+        idle_seconds = memory_manager.idle_unload_seconds()
+        if idle_unloaded or idle_seconds <= 0:
+            async_tasks._ready.wait()
+        elif not async_tasks._ready.wait(timeout=max(1.0, idle_seconds - memory_manager.idle_for())):
+            if memory_manager.idle_for() >= idle_seconds:
+                memory_manager.unload_idle_models()
+                idle_unloaded = True
+            continue
         if not async_tasks:
             async_tasks._ready.clear()
             continue
@@ -2089,7 +2129,14 @@ def worker():
         if not async_tasks:
             async_tasks._ready.clear()
 
+        memory_manager.mark_activity()
+        idle_unloaded = False
         try:
+            # Prompt Studio asks Ollama to unload when Generate is clicked;
+            # make sure that finished before the image model loads.
+            import modules.prompt_studio as prompt_studio
+            prompt_studio.wait_for_release()
+            memory_manager.log_memory('before generation')
             queued_prompts = split_prompt_queue(task.prompt) if getattr(task, 'prompt_queue', False) else []
             if len(queued_prompts) > 1:
                 run_prompt_queue(task, queued_prompts)
@@ -2102,7 +2149,7 @@ def worker():
             import modules.ui_family as ui_family
             if ui_family.is_sdxl(task.base_model_name):  # SDXL was freed for FLUX/sd.cpp; nothing to warm up
                 pipeline.prepare_text_encoder(async_call=True)
-        except BaseException:
+        except BaseException as exc:
             # Deliberately broad: this is the only generation thread, so it
             # must survive anything a task throws, including BaseException
             # subclasses like EarlyReturnException or a library's sys.exit().
@@ -2110,10 +2157,24 @@ def worker():
             # sending 'finish', leaving the UI stuck until restart.
             # KeyboardInterrupt only reaches the main thread, never this one.
             traceback.print_exc()
+            out_of_memory = memory_manager.is_oom_error(exc)
+            if out_of_memory:
+                print('[memory] This generation ran out of memory even after freeing memory and retrying. '
+                      'Everything is unloaded now so the next one starts clean. Try a smaller size, '
+                      'fewer images per run, or turn off auto upscale\'s detail pass.')
             task.yields.append(['finish', task.results])
+        else:
+            out_of_memory = False
         finally:
             if pid in modules.patch.patch_settings:
                 del modules.patch.patch_settings[pid]
+            memory_manager.mark_activity()
+        if out_of_memory:
+            # Outside the except block, so the failed step's tensors are gone.
+            memory_manager.free_everything('a generation ran out of memory')
+        else:
+            pygc.collect()
+        memory_manager.log_memory('after generation')
 
 
 threading.Thread(target=worker, daemon=True).start()

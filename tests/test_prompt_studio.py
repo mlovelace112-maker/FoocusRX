@@ -205,6 +205,15 @@ class TestOllamaEngine(unittest.TestCase):
         self.assertEqual(self.fake.requests[-1], ('/api/generate', {'model': 'gemma3:4b', 'keep_alive': 0}))
         self.assertFalse(ps.release(wait=True))  # nothing left to unload
 
+    def test_background_release_can_be_waited_for(self):
+        ps.build_prompt('a cat', None, ps.REF_DESCRIBE_ONLY, self.settings)
+        self.assertTrue(ps.release())  # background, as when Generate is clicked
+        self.assertTrue(ps.wait_for_release(timeout=10))
+        self.assertEqual(self.fake.requests[-1], ('/api/generate', {'model': 'gemma3:4b', 'keep_alive': 0}))
+
+    def test_wait_for_release_with_nothing_pending(self):
+        self.assertTrue(ps.wait_for_release(timeout=0.1))
+
     def test_needs_idea_or_image(self):
         with self.assertRaises(ps.StudioError):
             ps.build_prompt('   ', None, ps.REF_DESCRIBE_ONLY, self.settings)

@@ -1,7 +1,6 @@
 from collections import OrderedDict
 
 import modules.core as core
-import torch
 from ldm_patched.contrib.external_upscale_model import ImageUpscaleWithModel
 from ldm_patched.pfn.architecture.RRDB import RRDBNet as ESRGAN
 from modules.config import downloading_upscale_model
@@ -14,8 +13,9 @@ _extra = (None, None)     # (path, model): the last user model (models/upscale_m
 def _built_in():
     global model
     if model is None:
+        import ldm_patched.modules.utils
         model_filename = downloading_upscale_model()
-        sd = torch.load(model_filename, weights_only=True)
+        sd = ldm_patched.modules.utils.torch_load_mmap(model_filename, weights_only=True)
         sdo = OrderedDict()
         for k, v in sd.items():
             sdo[k.replace('residual_block_', 'RDB')] = v
@@ -46,6 +46,16 @@ def load_model(path=None):
     loaded.cpu()
     _extra = (path, loaded)
     return loaded
+
+
+def release():
+    """Drop the cached upscaler models (they are reloaded on next use). Called
+    after an auto-upscale run and when another model family needs the memory."""
+    global model, _extra
+    had = model is not None or _extra[1] is not None
+    model = None
+    _extra = (None, None)
+    return had
 
 
 def model_scale(path=None) -> int:

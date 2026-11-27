@@ -451,8 +451,24 @@ def ollama_chat(settings: StudioSettings, model: str, messages: list, schema: di
     return (data.get('message') or {}).get('content', '')
 
 
+_release_thread = None
+
+
+def wait_for_release(timeout: float = 15.0) -> bool:
+    """Block until a release() started in the background has finished (or
+    ``timeout`` seconds pass), so the image model doesn't load while Ollama
+    still holds its models. True when nothing is pending any more."""
+    thread = _release_thread
+    if thread is None or not thread.is_alive():
+        return True
+    thread.join(timeout)
+    return not thread.is_alive()
+
+
 def release(wait: bool = False):
-    """Ask Ollama to unload the studio's models now (non-blocking by default)."""
+    """Ask Ollama to unload the studio's models now (non-blocking by default;
+    wait_for_release() waits for a background release)."""
+    global _release_thread
     with _used_lock:
         used = dict(_used_ollama)
         _used_ollama.clear()
@@ -469,7 +485,8 @@ def release(wait: bool = False):
     if wait:
         unload()
     else:
-        threading.Thread(target=unload, daemon=True, name='prompt-studio-release').start()
+        _release_thread = threading.Thread(target=unload, daemon=True, name='prompt-studio-release')
+        _release_thread.start()
     return True
 
 

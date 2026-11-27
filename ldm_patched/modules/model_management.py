@@ -1,5 +1,6 @@
 import os
 import psutil
+import gc
 from enum import Enum
 from ldm_patched.modules.args_parser import args
 import ldm_patched.modules.utils
@@ -922,6 +923,15 @@ def should_use_fp16(device=None, model_params=0, prioritize_performance=True):
 def soft_empty_cache(force=False):
     global cpu_state
     if cpu_state == CPUState.MPS:
+        if force:
+            # Model graphs often sit in reference cycles; collect them so their
+            # buffers are actually unused before the cache is returned, and let
+            # queued Metal work finish (it still holds its buffers).
+            gc.collect()
+            try:
+                torch.mps.synchronize()
+            except Exception:
+                pass
         torch.mps.empty_cache()
     elif is_intel_xpu():
         torch.xpu.empty_cache()
@@ -932,6 +942,21 @@ def soft_empty_cache(force=False):
 
 def unload_all_models():
     free_memory(1e30, get_torch_device())
+    gc.collect()
+    soft_empty_cache(force=True)
+
+
+def is_oom_error(exc):
+    """True for an out-of-memory error on any backend. On MPS that is a plain
+    RuntimeError("MPS backend out of memory ..."), which ``except
+    OOM_EXCEPTION`` (CUDA's class) does not catch."""
+    if isinstance(exc, OOM_EXCEPTION) and OOM_EXCEPTION is not Exception:
+        return True
+    try:
+        from modules.memory_manager import is_oom_error as _is_oom
+    except Exception:
+        return isinstance(exc, RuntimeError) and 'out of memory' in str(exc).lower()
+    return _is_oom(exc)
 
 
 def resolve_lowvram_weight(weight, model, key): #TODO: remove

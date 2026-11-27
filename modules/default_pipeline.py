@@ -1,4 +1,5 @@
 import modules.core as core
+import modules.memory_manager as memory_manager
 import os
 import torch
 import modules.patch
@@ -57,10 +58,42 @@ def assert_model_integrity():
     return True
 
 
+def _model_patchers(sd_model):
+    """Every ModelPatcher a StableDiffusionModel holds (LoRA clones share the
+    base patcher's weights, so unloading the base's clones covers them)."""
+    if sd_model is None:
+        return []
+    patchers = [sd_model.unet, sd_model.unet_with_lora]
+    for clip in (sd_model.clip, sd_model.clip_with_lora):
+        patchers.append(getattr(clip, 'patcher', None))
+    patchers.append(getattr(sd_model.vae, 'patcher', None))
+    patchers.append(getattr(sd_model.clip_vision, 'patcher', None))
+    return [p for p in patchers if p is not None]
+
+
+def release_model(sd_model):
+    """Unload a model that is being replaced, before its replacement loads,
+    so the old and new checkpoints are never in memory at the same time.
+    model_management's list of loaded models would otherwise keep the old
+    weights alive until something else needed the space."""
+    patchers = _model_patchers(sd_model)
+    if not patchers:
+        return False
+    import ldm_patched.modules.model_management as mm
+    for patcher in patchers:
+        mm.unload_model_clones(patcher)
+    return True
+
+
+def _shares_weights(a, b):
+    return a is not None and b is not None and getattr(a, 'unet', None) is not None \
+        and getattr(a.unet, 'model', None) is getattr(getattr(b, 'unet', None), 'model', object())
+
+
 @torch.no_grad()
 @torch.inference_mode()
 def refresh_base_model(name, vae_name=None):
-    global model_base
+    global model_base, model_refiner
 
     filename = get_file_from_folder_list(name, modules.config.paths_checkpoints)
 
@@ -71,9 +104,19 @@ def refresh_base_model(name, vae_name=None):
     if model_base.filename == filename and model_base.vae_filename == vae_filename:
         return
 
+    # Drop the old checkpoint first (and a synthetic refiner built from it).
+    old = model_base
+    if release_model(old):
+        if _shares_weights(model_refiner, old):
+            model_refiner = core.StableDiffusionModel()
+        model_base = core.StableDiffusionModel()
+        del old
+        memory_manager.release_cached_memory()
+
     model_base = core.load_model(filename, vae_filename)
     print(f'Base model loaded: {model_base.filename}')
     print(f'VAE loaded: {model_base.vae_filename}')
+    memory_manager.log_memory('after loading the base model')
     return
 
 
@@ -87,7 +130,12 @@ def refresh_refiner_model(name):
     if model_refiner.filename == filename:
         return
 
+    old = model_refiner
     model_refiner = core.StableDiffusionModel()
+    # A synthetic refiner shares the base model's weights: leave those loaded.
+    if not _shares_weights(old, model_base) and release_model(old):
+        del old
+        memory_manager.release_cached_memory()
 
     if name == 'None':
         print(f'Refiner unloaded.')
@@ -348,9 +396,18 @@ def get_candidate_vae(steps, switch, denoise=1.0, refiner_swap_method='joint'):
     return final_vae, final_refiner_vae
 
 
+def process_diffusion(*args, **kwargs):
+    """One diffusion run (see _process_diffusion). If it runs out of memory,
+    every model is moved off the GPU and the cache released, and the run is
+    tried once more from the start with the same seed; the models it needs
+    are loaded back on the way."""
+    return memory_manager.run_with_oom_retry(_process_diffusion, *args, label='sampling',
+                                             free=memory_manager.free_gpu_memory, **kwargs)
+
+
 @torch.no_grad()
 @torch.inference_mode()
-def process_diffusion(positive_cond, negative_cond, steps, switch, width, height, image_seed, callback, sampler_name, scheduler_name, latent=None, denoise=1.0, tiled=False, cfg_scale=7.0, refiner_swap_method='joint', disable_preview=False):
+def _process_diffusion(positive_cond, negative_cond, steps, switch, width, height, image_seed, callback, sampler_name, scheduler_name, latent=None, denoise=1.0, tiled=False, cfg_scale=7.0, refiner_swap_method='joint', disable_preview=False):
     target_unet, target_vae, target_refiner_unet, target_refiner_vae, target_clip \
         = final_unet, final_vae, final_refiner_unet, final_refiner_vae, final_clip
 

@@ -228,6 +228,7 @@ class VAE:
         return samples
 
     def decode(self, samples_in):
+        pixel_samples = None
         try:
             memory_used = self.memory_used_decode(samples_in.shape, self.vae_dtype)
             model_management.load_models_gpu([self.patcher], memory_required=memory_used)
@@ -239,8 +240,17 @@ class VAE:
             for x in range(0, samples_in.shape[0], batch_number):
                 samples = samples_in[x:x+batch_number].to(self.vae_dtype).to(self.device)
                 pixel_samples[x:x+batch_number] = torch.clamp((self.first_stage_model.decode(samples).to(self.output_device).float() + 1.0) / 2.0, min=0.0, max=1.0)
-        except model_management.OOM_EXCEPTION as e:
+            oom = False
+        except Exception as e:
+            # MPS raises a plain RuntimeError for out-of-memory, not OOM_EXCEPTION.
+            if not model_management.is_oom_error(e):
+                raise
+            oom = True
+        if oom:
+            # Outside the except block, so the failed attempt's tensors are gone.
             print("Warning: Ran out of memory when regular VAE decoding, retrying with tiled VAE decoding.")
+            pixel_samples = samples = None
+            model_management.soft_empty_cache(force=True)
             pixel_samples = self.decode_tiled_(samples_in)
 
         pixel_samples = pixel_samples.to(self.output_device).movedim(1,-1)
@@ -263,9 +273,16 @@ class VAE:
             for x in range(0, pixel_samples.shape[0], batch_number):
                 pixels_in = (2. * pixel_samples[x:x+batch_number] - 1.).to(self.vae_dtype).to(self.device)
                 samples[x:x+batch_number] = self.first_stage_model.encode(pixels_in).to(self.output_device).float()
-
-        except model_management.OOM_EXCEPTION as e:
+            oom = False
+        except Exception as e:
+            # MPS raises a plain RuntimeError for out-of-memory, not OOM_EXCEPTION.
+            if not model_management.is_oom_error(e):
+                raise
+            oom = True
+        if oom:
             print("Warning: Ran out of memory when regular VAE encoding, retrying with tiled VAE encoding.")
+            samples = pixels_in = None
+            model_management.soft_empty_cache(force=True)
             samples = self.encode_tiled_(pixel_samples)
 
         return samples

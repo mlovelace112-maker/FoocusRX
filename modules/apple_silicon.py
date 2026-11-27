@@ -10,12 +10,11 @@ variables that tune the MPS backend for the detected chip generation:
                       Set FOOOCUS_HAS_NEURAL_ACCELERATORS=1 so upstream
                       code can decide whether to enable mtlflashattn.
 
-Also picks a saner default for PYTORCH_MPS_HIGH_WATERMARK_RATIO than
-upstream's blanket ``0.0`` (which disables the memory cap entirely):
-
-  * >= 32 GB unified memory: 0.0 (upstream behavior; we have headroom).
-  * 16-31 GB:                0.85 (leave the OS ~15%).
-  * < 16 GB:                 0.7  (leave the OS ~30%).
+Also picks PYTORCH_MPS_HIGH/LOW_WATERMARK_RATIO from total unified memory
+and the "allow swap" setting (FOOOCUS_ALLOW_SWAP or ``allow_swap`` in
+config.txt, on by default): with it on, PyTorch may go past physical memory
+and macOS swaps the overflow instead of the generation failing. See
+watermark_ratios() and docs/memory.md.
 
 Nothing here fails hard. If detection doesn't work, the module returns
 without setting anything and Fooocus behaves as before.
@@ -365,6 +364,96 @@ def auto_install_mtlflashattn(*, log=print) -> str:
     return "installed"
 
 
+_TRUE = ("1", "true", "on", "yes")
+_FALSE = ("0", "false", "off", "no")
+
+
+def _parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in _TRUE:
+        return True
+    if text in _FALSE:
+        return False
+    return None
+
+
+def _config_txt_path() -> str:
+    env = os.environ.get("config_path")
+    if env:
+        return env
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.txt")
+
+
+def allow_swap_enabled() -> bool:
+    """Whether PyTorch may allocate past the physical memory budget and let
+    macOS swap (True, the default) or should raise out-of-memory first.
+
+    Read before torch is imported, so it can't come from modules.config:
+    FOOOCUS_ALLOW_SWAP=0/1 wins, then ``"allow_swap": false`` in config.txt.
+    """
+    env = _parse_bool(os.environ.get("FOOOCUS_ALLOW_SWAP", ""))
+    if env is not None:
+        return env
+    try:
+        import json
+        with open(_config_txt_path(), encoding="utf-8") as fh:
+            value = json.load(fh).get("allow_swap")
+        parsed = _parse_bool(value) if value is not None else None
+        if parsed is not None:
+            return parsed
+    except Exception:
+        pass
+    return True
+
+
+def low_ratio_for(high_str: str) -> str:
+    """A low watermark PyTorch accepts for ``high_str`` (never above it)."""
+    try:
+        high = float(high_str)
+    except ValueError:
+        high = 0.85
+    # high=0.0 is the "disable cap" sentinel; pair it with a low that is
+    # also disabled (0.0) so torch doesn't try to derive one.
+    if high <= 0.0:
+        return "0.0"
+    low = max(0.0, min(high - 0.05, high * 0.9))
+    return f"{low:.2f}"
+
+
+def watermark_ratios(mem_gb: int, allow_swap: bool = True) -> tuple:
+    """(high, low) PYTORCH_MPS_*_WATERMARK_RATIO strings.
+
+    The ratios are multiples of Metal's recommended working set (about 3/4
+    of physical memory). Past the high ratio PyTorch raises out-of-memory.
+
+    allow_swap on (default):
+      * >= 32 GB: 0.0, no cap (upstream behaviour; plenty of headroom).
+      * < 32 GB:  1.7 / 1.4, PyTorch's own defaults: allocations may reach
+                  about 1.25x physical memory, macOS swaps the overflow, and
+                  only past that does PyTorch raise out-of-memory, which
+                  FoocusRX catches, frees memory and retries.
+    allow_swap off (stay in physical memory, error instead of swapping):
+      * >= 32 GB: 1.0;  16-31 GB: 0.85;  < 16 GB: 0.7.
+
+    FoocusRX's own planning (model_management._mps_free_memory) never
+    counts past 1.0, so models are still unloaded to stay inside physical
+    memory; the swap headroom only absorbs peaks.
+    """
+    if allow_swap:
+        if mem_gb >= 32:
+            return "0.0", "0.0"
+        return "1.7", "1.4"
+    if mem_gb >= 32:
+        high = "1.0"
+    elif mem_gb >= 16:
+        high = "0.85"
+    else:
+        high = "0.7"
+    return high, low_ratio_for(high)
+
+
 def configure(verbose: bool = True) -> dict:
     """Detect the chip and set MPS-tuning env vars. Idempotent.
 
@@ -404,42 +493,31 @@ def configure(verbose: bool = True) -> dict:
         os.environ.setdefault("FOOOCUS_HAS_NEURAL_ACCELERATORS", "1")
         applied["FOOOCUS_HAS_NEURAL_ACCELERATORS"] = "1"
 
-    # Sane memory watermark. Upstream sets 0.0 unconditionally which
-    # removes MPS's OOM guard entirely — fine on 64+ GB, dangerous on
-    # 16 GB where SDXL can push the whole machine into swap and lock up
-    # the UI. Only downgrade if the user hasn't set it explicitly.
+    # Memory watermark: when PyTorch gives up and raises out-of-memory.
+    # With "allow swap" on (the default) PyTorch may allocate past the
+    # physical budget and macOS swaps the overflow; off, it errors first.
+    # See watermark_ratios() and docs/memory.md. An explicit
+    # PYTORCH_MPS_HIGH_WATERMARK_RATIO / _LOW_ always wins.
+    allow_swap = allow_swap_enabled()
+    info["allow_swap"] = allow_swap
+    applied["allow_swap"] = "on" if allow_swap else "off"
+    high_default, low_default = watermark_ratios(mem_gb, allow_swap)
     if "PYTORCH_MPS_HIGH_WATERMARK_RATIO" not in os.environ:
-        if mem_gb >= 32:
-            ratio = "0.0"
-        elif mem_gb >= 16:
-            ratio = "0.85"
-        else:
-            ratio = "0.7"
-        os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = ratio
-        applied["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = ratio
+        os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = high_default
+        applied["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = high_default
 
     # PYTORCH_MPS_LOW_WATERMARK_RATIO must also be set explicitly. On
     # recent torch (2.5+), when the user or FoocusRX sets *only* the high
     # ratio, torch derives the low ratio via a multiplier that on shared-
-    # memory Apple Silicon can compute a value > 1.0 (observed: 1.4 with
-    # high=0.85). Torch then rejects it at first `.to('mps')` with
-    # `RuntimeError: invalid low watermark ratio 1.4`. Pin it below high.
-    # The low ratio controls when MPS starts *proactively* releasing
-    # cached blocks; a value slightly below high gives the allocator a
-    # small headroom band to work in.
+    # memory Apple Silicon can compute a value > the high ratio (observed:
+    # 1.4 with high=0.85). Torch then rejects it at first `.to('mps')` with
+    # `RuntimeError: invalid low watermark ratio 1.4`. Pin it at or below high.
     if "PYTORCH_MPS_LOW_WATERMARK_RATIO" not in os.environ:
-        high_str = os.environ.get("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.85")
-        try:
-            high = float(high_str)
-        except ValueError:
-            high = 0.85
-        # high=0.0 is the "disable cap" sentinel; pair it with a low that
-        # is also disabled (0.0) so torch doesn't try to derive one.
-        if high <= 0.0:
-            low = 0.0
+        high_str = os.environ.get("PYTORCH_MPS_HIGH_WATERMARK_RATIO", high_default)
+        if high_str == high_default:
+            low_str = low_default
         else:
-            low = max(0.0, min(high - 0.05, high * 0.9))
-        low_str = f"{low:.2f}"
+            low_str = low_ratio_for(high_str)
         os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = low_str
         applied["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = low_str
 

@@ -270,6 +270,16 @@ temp_path_cleanup_on_launch = get_config_item_or_set_default(
     validator=lambda x: isinstance(x, bool),
     expected_type=bool
 )
+# Apple Silicon: let PyTorch allocate past physical memory so macOS swaps
+# instead of the generation failing. Read at launch, before torch loads
+# (modules/apple_silicon.allow_swap_enabled); listed here so it shows up in
+# config_modification_tutorial.txt. Takes effect on the next launch.
+allow_swap = get_config_item_or_set_default(
+    key='allow_swap',
+    default_value=True,
+    validator=lambda x: isinstance(x, bool),
+    expected_type=bool
+)
 default_base_model_name = default_model = get_config_item_or_set_default(
     key='default_model',
     default_value='model.safetensors',

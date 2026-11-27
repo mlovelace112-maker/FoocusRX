@@ -13,7 +13,7 @@ anything imports torch and sets a handful of environment variables:
 |--------------------------------------|-------------------------------------|-------------------------------------------|
 | `FOOOCUS_PREFERRED_DTYPE`            | M4 or newer (BF16 hardware present) | `bfloat16`                                |
 | `FOOOCUS_HAS_NEURAL_ACCELERATORS`    | M5 or newer                         | `1`                                       |
-| `PYTORCH_MPS_HIGH_WATERMARK_RATIO`   | Unless user has set it              | `0.0` (≥32 GB), `0.85` (16–31), `0.7` (<16) |
+| `PYTORCH_MPS_HIGH_WATERMARK_RATIO`   | Unless user has set it              | Allow swap on (default): `0.0` (≥32 GB), `1.7` (<32). Off: `1.0` / `0.85` / `0.7`. See [memory.md](./memory.md) |
 | `PYTORCH_ENABLE_MPS_FALLBACK`        | Unless user has set it              | `1`                                       |
 | `PYTORCH_MPS_PREFER_METAL`           | Always (Darwin arm64)               | `1` (ignored by torch < 2.5)              |
 | `OMP_NUM_THREADS` / `MKL_NUM_THREADS`| P-core count detected               | e.g. `6` on M5 Pro                        |
@@ -109,12 +109,10 @@ but useful if you swap in an FP8-quantized checkpoint from ComfyUI.
 
 ## Memory notes
 
-- Upstream Fooocus sets `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0`
-  unconditionally, which disables MPS's OOM guard. On a 64+ GB M5 Max
-  that's fine; on a 16 GB M-series machine it can push the whole
-  laptop into swap and lock up the UI. FoocusRX picks the value based
-  on `hw.memsize`.
-- You can override at any time:
+See [`docs/memory.md`](./memory.md) for how FoocusRX loads and unloads
+models, the "allow swap" setting and the `[memory]` log lines.
+
+- You can override the watermark at any time:
   `export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.9`
 - To see current MPS memory pressure:
   `python -c "import torch; print(torch.mps.current_allocated_memory()/1e9, 'GB')"`
