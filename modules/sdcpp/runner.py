@@ -36,11 +36,20 @@ class Stopped(Exception):
 
 def build_argv(binary: str, spec, model_dir: str, diffusion_name: str, *, prompt: str, negative_prompt: str,
                width: int, height: int, seed: int, steps: int, cfg: float, output: str,
-               extra_args=(), lora_dir: str | None = None) -> list:
-    """argv for one text-to-image run (a list, never a shell string)."""
+               extra_args=(), lora_dir: str | None = None, uses_negative: bool | None = None,
+               scheduler: str | None = None) -> list:
+    """argv for one text-to-image run (a list, never a shell string).
+
+    ``diffusion_name`` is relative to ``model_dir`` or an absolute path (a
+    model found in a subfolder or in the checkpoints folder). ``uses_negative``
+    and ``scheduler`` default to the family's (a checkpoint variant may differ)."""
     def path(role):
         return os.path.join(model_dir, spec.file(role).name)
 
+    if uses_negative is None:
+        uses_negative = spec.uses_negative
+    if scheduler is None:
+        scheduler = spec.scheduler
     argv = [binary,
             '--diffusion-model', os.path.join(model_dir, diffusion_name),
             '--llm', path('llm'),
@@ -50,13 +59,13 @@ def build_argv(binary: str, spec, model_dir: str, diffusion_name: str, *, prompt
     if lora_dir:
         argv += ['--lora-model-dir', lora_dir]
     argv += ['-p', prompt]
-    if spec.uses_negative and cfg > 1.0 and negative_prompt.strip():
+    if uses_negative and cfg > 1.0 and negative_prompt.strip():
         argv += ['-n', negative_prompt]
     argv += ['--cfg-scale', f'{cfg:g}',
              '--steps', str(int(steps)),
              '--sampling-method', spec.sampler]
-    if spec.scheduler:
-        argv += ['--scheduler', spec.scheduler]
+    if scheduler:
+        argv += ['--scheduler', scheduler]
     argv += ['-W', str(int(width)), '-H', str(int(height)),
              '-s', str(int(seed)),
              '-o', output]

@@ -1172,7 +1172,7 @@ def worker():
     @torch.no_grad()
     @torch.inference_mode()
     def resolve_lora(name):
-        return modules.util.get_file_from_folder_list(name, modules.config.paths_loras)
+        return modules.config.resolve_lora(name)
 
     def family_loras(family, prompt_loras, async_task):
         """The selected + prompt LoRAs that fit ``family``. Others (e.g. the
@@ -1343,9 +1343,15 @@ def worker():
         if async_task.overwrite_height > 0:
             height = async_task.overwrite_height
         width, height = sdcpp_app.snap16(width), sdcpp_app.snap16(height)
-        steps = async_task.overwrite_step if async_task.overwrite_step > 0 else spec.steps
+        # Sampling settings for this checkpoint (e.g. Krea 2 Raw/Base needs
+        # more steps and real CFG than Turbo; a MOSS turbo merge needs fewer).
+        settings = spec.settings_for(async_task.base_model_name)
+        cfg, uses_negative = settings['cfg'], settings['uses_negative']
+        steps = async_task.overwrite_step if async_task.overwrite_step > 0 else settings['steps']
         total = async_task.image_number
-        negative = async_task.negative_prompt if spec.uses_negative else ''
+        negative = async_task.negative_prompt if uses_negative else ''
+        if settings['variant']:
+            print(f"[sd.cpp] {spec.family} {settings['variant']} checkpoint: {steps} steps, CFG {cfg:g}")
 
         def should_stop():
             return bool(async_task.last_stop)
@@ -1376,9 +1382,10 @@ def worker():
                 output = os.path.join(tmp, 'out.png')
                 lora_dir, lora_tags = sdcpp_app.stage_loras(loras, os.path.join(tmp, 'loras'), resolve_lora)
                 argv = sdcpp_runner.build_argv(
-                    sdcpp_app.engine_path(), spec, model_dir, os.path.basename(async_task.base_model_name),
+                    sdcpp_app.engine_path(), spec, model_dir, sdcpp_app.diffusion_path(async_task.base_model_name),
                     prompt=text + lora_tags, negative_prompt=neg_text, width=width, height=height, seed=seed,
-                    steps=steps, cfg=spec.cfg, output=output, extra_args=sdcpp_app.extra_args(), lora_dir=lora_dir)
+                    steps=steps, cfg=cfg, output=output, extra_args=sdcpp_app.extra_args(), lora_dir=lora_dir,
+                    uses_negative=uses_negative, scheduler=settings['scheduler'])
                 try:
                     seconds = sdcpp_runner.run(argv, on_step=on_step, should_stop=should_stop,
                                                cwd=sdcpp_app.engine_dir())
@@ -1412,15 +1419,15 @@ def worker():
             # SDXL controls by "Load these settings".
             metadata = [
                 ('Prompt', 'prompt', prompt),
-                *([('Negative Prompt', 'negative_prompt', neg_text)] if spec.uses_negative else []),
+                *([('Negative Prompt', 'negative_prompt', neg_text)] if uses_negative else []),
                 ('Full prompt', 'full_prompt', text),
                 ('Styles', 'styles', str([s for s in async_task.style_selections if s != 'Fooocus V2'])),
                 ('Resolution', 'resolution', str((image.shape[1], image.shape[0]))),
                 ('Seed', 'seed', str(seed)),
                 ('Base Model', 'base_model', async_task.base_model_name),
                 (f'{spec.family} steps', 'sdcpp_steps', steps),
-                (f'{spec.family} CFG', 'sdcpp_cfg', spec.cfg),
-                (f'{spec.family} sampler', 'sdcpp_sampler', f'{spec.sampler} {spec.scheduler or "default"}'),
+                (f'{spec.family} CFG', 'sdcpp_cfg', cfg),
+                (f'{spec.family} sampler', 'sdcpp_sampler', f'{spec.sampler} {settings["scheduler"] or "default"}'),
                 *lora_metadata(loras),
                 ('Version', 'version', f'FoocusRX {spec.family} (stable-diffusion.cpp '
                                        f'{sdcpp_registry.ENGINE_VERSION})'),

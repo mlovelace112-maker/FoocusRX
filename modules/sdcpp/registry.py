@@ -52,6 +52,21 @@ class ModelSpec:
     license_requires_acceptance: bool = False
     notice: str = ''
     extra_args: tuple = field(default_factory=tuple)
+    # (name regex, ((setting, value), ...)) for checkpoints of this family that need other
+    # sampling settings, e.g. an undistilled base next to a distilled turbo.
+    variants: tuple = field(default_factory=tuple)
+
+    def settings_for(self, model_name) -> dict:
+        """Sampling settings for one checkpoint of this family: the family
+        defaults, with the first matching variant's overrides."""
+        settings = {'steps': self.steps, 'cfg': self.cfg, 'uses_negative': self.uses_negative,
+                    'scheduler': self.scheduler, 'variant': ''}
+        name = os.path.basename(str(model_name or ''))
+        for pattern, overrides in self.variants:
+            if re.search(pattern, name, re.IGNORECASE):
+                settings.update(dict(overrides))
+                break
+        return settings
 
     def file(self, role: str):
         return next((f for f in self.files if f.role == role), None)
@@ -86,12 +101,18 @@ KREA2 = ModelSpec(
                  'a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f'),
     ),
     steps=8, cfg=1.0, sampler='euler', scheduler='simple', uses_negative=False,
+    # Krea 2 Raw/Base is the undistilled release: about 50 steps at CFG 3
+    # (Vantage's ComfyUI workflow for Krea-2-Raw: 52 steps, CFG 3, simple).
+    variants=((r'(^|[-_. ])(raw|base)([-_. ]|$)(?!.*turbo)',
+               (('steps', 50), ('cfg', 3.0), ('uses_negative', True), ('variant', 'Raw/Base'))),),
     license_name='Krea 2 Community License',
     license_url='https://huggingface.co/krea/Krea-2-Turbo/blob/main/LICENSE.pdf',
     license_requires_acceptance=True,
     notice=('**Krea 2 Turbo** (12.9B, 8 steps): natural-language prompts; describe the scene in full sentences. '
             'Uses your prompt, styles (as text), wildcards, aspect ratio, seed and image number. SDXL-only controls '
-            '(negative prompt, performance, CFG, sampler, refiner, input image, enhance) are hidden. LoRAs made for Krea 2 work (Advanced > Models).'),
+            '(negative prompt, performance, CFG, sampler, refiner, input image, enhance) are hidden. LoRAs made for Krea 2 work (Advanced > Models). '
+            'Any Krea 2 checkpoint in the Krea 2 or checkpoints folder is listed (.gguf or .safetensors); '
+            'Raw/Base checkpoints (with raw or base in the file name) run at 50 steps, CFG 3, with the negative prompt.'),
 )
 
 MOSS_IMAGE = ModelSpec(
@@ -119,21 +140,49 @@ MOSS_IMAGE = ModelSpec(
     # 27/50 steps skipped, sampling 493 s -> 230 s at 1024x1024 on an M5 Pro,
     # with the multi-line sign text still exact and the image nearly identical.
     extra_args=('--cache-mode', 'easycache'),
+    # Distilled MOSS checkpoints (merged turbo / 4-step / 8-step): CFG 1, no
+    # negative branch (molbal/MOSS-Image-GGUF: Turbo 8 steps, CFG 1).
+    variants=((r'turbo|(^|[-_. ])8[-_ ]?steps?([-_. ]|$)', (('steps', 8), ('cfg', 1.0), ('uses_negative', False),
+                                                             ('variant', 'Turbo'))),
+              (r'(^|[-_. ])4[-_ ]?steps?([-_. ]|$)', (('steps', 4), ('cfg', 1.0), ('uses_negative', False),
+                                                       ('variant', '4-step')))),
     license_name='Apache-2.0',
     license_url='https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/blob/main/LICENSE',
     notice=('**MOSS-Image SFT** (5B, 50 steps, CFG 3): strong at on-image text and layout. Line breaks in the prompt '
             'are kept, so multi-line sign or poster text works, and a JSON layout prompt is passed through unchanged '
             '(styles are not applied to it). Uses your prompt, negative prompt, styles, wildcards, aspect ratio, seed '
             'and image number; Debug > "Forced Overwrite of Sampling Step" changes the step count. About 5 min per image '
-            '(two transformer passes per step; about half the steps are reused from a cache).'),
+            '(two transformer passes per step; about half the steps are reused from a cache). Turbo / 8-step '
+            'and 4-step checkpoints (named so) run at CFG 1 with 8 or 4 steps.'),
 )
 
 MODELS = (KREA2, MOSS_IMAGE)
 FAMILIES = tuple(m.family for m in MODELS)
 
 
+# Base model names found on disk -> (ModelSpec, absolute path). Filled by
+# modules.sdcpp.app.model_choices() from each file's header, so a model is
+# recognised whatever it is called; name patterns are only the fallback (for
+# History entries of models that are no longer installed).
+_installed = {}
+
+
+def register_installed(found: dict):
+    """Replace the index of installed sd.cpp models: {name: (spec, path)}."""
+    _installed.clear()
+    _installed.update(found)
+
+
+def installed_path(model_name):
+    entry = _installed.get(str(model_name or ''))
+    return entry[1] if entry else None
+
+
 def spec_for(model_name):
     """The ModelSpec a base model name belongs to, or None."""
+    entry = _installed.get(str(model_name or ''))
+    if entry is not None:
+        return entry[0]
     for spec in MODELS:
         if spec.matches(model_name):
             return spec
