@@ -16,6 +16,8 @@ import modules.style_sorter as style_sorter
 import modules.meta_parser
 import modules.prompt_rewriter
 import modules.prompt_library
+import modules.prompt_studio
+import modules.prompt_studio_ui
 import modules.ui_family
 import modules.lora_family
 import modules.security
@@ -100,6 +102,7 @@ def generate_clicked(task: worker.AsyncTask):
     with model_management.interrupt_processing_mutex:
         model_management.interrupt_processing = False
     modules.prompt_rewriter.release()  # don't keep ~3 GB next to the image model
+    modules.prompt_studio.release()    # ask Ollama to unload the Prompt Studio models
     # outputs=[progress_html, progress_window, progress_gallery, gallery]
 
     if len(task.args) == 0:
@@ -312,12 +315,17 @@ with shared.gradio_root:
                                                   scale=3, elem_id='compare_model_b')
                     compare_button = gr.Button(value='Compare', variant='primary', scale=1, min_width=0,
                                                elem_id='compare_button')
+            with gr.Accordion(label='\u2728 Prompt Studio', open=False, elem_id='prompt_studio_accordion'):
+                prompt_studio = modules.prompt_studio_ui.build_panel(
+                    modules.prompt_studio.load_settings(modules.config.path_outputs),
+                    modules.config.available_aspect_ratios_labels,
+                    modules.prompt_studio.available_styles(legal_style_names))
             with gr.Row(elem_classes='advanced_check_row'):
                 input_image_checkbox = gr.Checkbox(label='Input Image', value=modules.config.default_image_prompt_checkbox, container=False, elem_classes='min_check')
                 enhance_checkbox = gr.Checkbox(label='Enhance', value=modules.config.default_enhance_checkbox, container=False, elem_classes='min_check')
                 advanced_checkbox = gr.Checkbox(label='Advanced', value=modules.config.default_advanced_checkbox, container=False, elem_classes='min_check')
             with gr.Row(visible=modules.config.default_image_prompt_checkbox) as image_input_panel:
-                with gr.Tabs(selected=modules.config.default_selected_image_input_tab_id):
+                with gr.Tabs(selected=modules.config.default_selected_image_input_tab_id) as image_input_tabs:
                     with gr.Tab(label='Upscale or Variation', id='uov_tab') as uov_tab:
                         with gr.Row():
                             with gr.Column():
@@ -1516,6 +1524,16 @@ with shared.gradio_root:
                 raise gr.Error(str(exc))
             gr.Info(f"Saved to Prompts: \u201c{entry['name']}\u201d")
 
+        # --- Prompt Studio: idea / reference image -> prompt, styles, Image Prompt
+        modules.prompt_studio_ui.wire(
+            prompt_studio, root_fn=lambda: modules.config.path_outputs, legal_style_names=legal_style_names,
+            aspect_labels=modules.config.available_aspect_ratios_labels, base_model=base_model, prompt=prompt,
+            negative_prompt=negative_prompt, style_selections=style_selections,
+            aspect_ratios_selection=aspect_ratios_selection, input_image_checkbox=input_image_checkbox,
+            image_input_tabs=image_input_tabs, current_tab=current_tab, ip_image=ip_images[0], ip_type=ip_types[0],
+            ip_stop=ip_stops[0], ip_weight=ip_weights[0], ip_ad_col=ip_ad_cols[0],
+            ip_defaults=flags.default_parameters)
+
         view_larger_button.click(None, queue=False, show_progress=False,
                                  **gc.js_kwarg("() => { rxViewGallery('#final_gallery'); return []; }"))
         save_prompt_button.click(save_prompt_toolbar, inputs=[prompt, negative_prompt], queue=False,
@@ -1528,6 +1546,7 @@ with shared.gradio_root:
             with model_management.interrupt_processing_mutex:
                 model_management.interrupt_processing = False
             modules.prompt_rewriter.release()
+            modules.prompt_studio.release()
             args[-1], args[-2] = None, False  # no draft request, draft mode off
             seed = refresh_seed(seed_is_random, args[ctrls.index(image_seed)])
             args[ctrls.index(image_seed)] = seed
